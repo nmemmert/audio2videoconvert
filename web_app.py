@@ -1,0 +1,507 @@
+#!/usr/bin/env python3
+"""
+Web interface for the podcast video generator.
+Run with: python3 web_app.py
+Then open http://<server-ip>:8000 in a browser.
+"""
+
+import json
+import queue
+import shutil
+import tempfile
+import threading
+import time
+import uuid
+from pathlib import Path
+from werkzeug.utils import secure_filename
+
+from flask import Flask, render_template, request, jsonify, send_file, redirect, url_for
+
+import render_engine as eng
+
+HERE = Path(__file__).resolve().parent
+PRESETS_DIR = HERE / "presets"
+PRESETS_DIR.mkdir(exist_ok=True)
+UPLOAD_DIR = HERE / "uploads"
+UPLOAD_DIR.mkdir(exist_ok=True)
+OUTPUT_DIR = HERE / "output"
+OUTPUT_DIR.mkdir(exist_ok=True)
+ART_DIR = HERE / "art"
+ART_DIR.mkdir(exist_ok=True)
+CLIPS_DIR = HERE / "generated_clips"
+CLIPS_DIR.mkdir(exist_ok=True)
+JOBS_FILE = HERE / "jobs.json"
+
+app = Flask(__name__)
+app.config["MAX_CONTENT_LENGTH"] = 2 * 1024 * 1024 * 1024  # 2GB uploads
+
+# job_id -> dict(status, stage, progress, log, output, output_name, created,
+#                 title, audio_name, settings, script_name, preview)
+JOBS = {}
+JOBS_LOCK = threading.Lock()
+
+JOB_QUEUE = queue.Queue()
+
+
+def _load_jobs():
+    if JOBS_FILE.exists():
+        try:
+            data = json.loads(JOBS_FILE.read_text())
+        except Exception:
+            return
+        for job_id, job in data.items():
+            if job.get("status") in ("running", "queued"):
+                job["status"] = "failed"
+                job["stage"] = "Interrupted (server restarted)"
+            JOBS[job_id] = job
+
+
+def _save_jobs():
+    with JOBS_LOCK:
+        # don't persist full per-line logs forever
+        slim = {}
+        for job_id, job in JOBS.items():
+            j = dict(job)
+            j["log"] = j.get("log", [])[-30:]
+            slim[job_id] = j
+        try:
+            JOBS_FILE.write_text(json.dumps(slim, indent=2))
+        except Exception:
+            pass
+
+
+_load_jobs()
+
+
+def _seed_builtin_presets():
+    for name, settings in eng.BUILTIN_PRESETS.items():
+        fname = PRESETS_DIR / f"{name}.json"
+        if not fname.exists():
+            fname.write_text(json.dumps(settings, indent=2))
+
+
+_seed_builtin_presets()
+
+
+def list_presets():
+    return sorted(p.stem for p in PRESETS_DIR.glob("*.json"))
+
+
+def list_art():
+    exts = {".jpg", ".jpeg", ".png"}
+    return sorted(p.name for p in ART_DIR.iterdir() if p.suffix.lower() in exts)
+
+
+def list_clips():
+    return sorted(p.name for p in CLIPS_DIR.glob("*.mp4") if not p.name.startswith("bg_"))
+
+
+def list_watermarks():
+    exts = {".jpg", ".jpeg", ".png"}
+    return sorted(p.name for p in ART_DIR.iterdir() if p.suffix.lower() in exts and p.name.startswith("wm_"))
+
+
+def list_bg_videos():
+    return sorted(p.name for p in CLIPS_DIR.glob("bg_*.mp4"))
+
+
+def _job_worker():
+    while True:
+        job_id = JOB_QUEUE.get()
+        try:
+            _run_job(job_id)
+        except Exception as e:
+            with JOBS_LOCK:
+                if job_id in JOBS:
+                    JOBS[job_id]["status"] = "failed"
+                    JOBS[job_id]["stage"] = "Error"
+                    JOBS[job_id]["log"].append(f"Unexpected error: {e}")
+            _save_jobs()
+
+
+threading.Thread(target=_job_worker, daemon=True).start()
+
+
+def _run_job(job_id):
+    with JOBS_LOCK:
+        job = JOBS[job_id]
+        job["status"] = "running"
+        job["stage"] = "Starting"
+        job["progress"] = 0.0
+    _save_jobs()
+
+    settings = job["settings"]
+    audio_path = Path(job["audio_path"])
+    art_path = Path(job["art_path"])
+    output_path = Path(job["output_path"])
+    script_path = Path(job["script_path"]) if job.get("script_path") else None
+    title = job.get("title", "")
+    preview_seconds = job.get("preview_seconds")
+    outline_titles = job.get("outline_titles")
+
+    def progress_cb(stage, frac):
+        with JOBS_LOCK:
+            job["stage"] = stage
+            job["progress"] = frac
+        _save_jobs()
+
+    def log_cb(msg):
+        with JOBS_LOCK:
+            job["log"].append(msg)
+        _save_jobs()
+
+    ok = eng.render_job(
+        settings, audio_path, output_path, art_path,
+        title=title, script_path=script_path, progress_cb=progress_cb, log_cb=log_cb,
+        preview_seconds=preview_seconds, outline_titles=outline_titles,
+    )
+    with JOBS_LOCK:
+        job["status"] = "done" if ok else "failed"
+        if ok:
+            job["output"] = str(output_path)
+            job["progress"] = 1.0
+            job["stage"] = "Done"
+    _save_jobs()
+
+
+@app.route("/")
+def index():
+    return render_template(
+        "index.html",
+        presets=list_presets(),
+        art_files=list_art(),
+        clips=list_clips(),
+        watermarks=list_watermarks(),
+        bg_videos=list_bg_videos(),
+        defaults=eng.DEFAULTS,
+        bg_styles=eng.BG_STYLES,
+        caption_styles=eng.CAPTION_STYLES,
+    )
+
+
+@app.route("/preset/<name>")
+def get_preset(name):
+    fname = PRESETS_DIR / f"{secure_filename(name)}.json"
+    if not fname.exists():
+        return jsonify({"error": "not found"}), 404
+    return jsonify(json.loads(fname.read_text()))
+
+
+@app.route("/preset/<name>", methods=["POST"])
+def save_preset(name):
+    settings = request.get_json()
+    fname = PRESETS_DIR / f"{secure_filename(name)}.json"
+    fname.write_text(json.dumps(settings, indent=2))
+    return jsonify({"ok": True})
+
+
+@app.route("/upload/art", methods=["POST"])
+def upload_art():
+    f = request.files["file"]
+    fname = secure_filename(f.filename)
+    f.save(ART_DIR / fname)
+    return jsonify({"ok": True, "filename": fname})
+
+
+@app.route("/upload/clip", methods=["POST"])
+def upload_clip():
+    kind = request.form.get("kind", "intro")
+    f = request.files["file"]
+    fname = f"{kind}_{secure_filename(f.filename)}"
+    f.save(CLIPS_DIR / fname)
+    return jsonify({"ok": True, "filename": fname})
+
+
+@app.route("/upload/watermark", methods=["POST"])
+def upload_watermark():
+    f = request.files["file"]
+    fname = f"wm_{secure_filename(f.filename)}"
+    f.save(ART_DIR / fname)
+    return jsonify({"ok": True, "filename": fname})
+
+
+@app.route("/upload/bgvideo", methods=["POST"])
+def upload_bgvideo():
+    f = request.files["file"]
+    fname = f"bg_{secure_filename(f.filename)}"
+    f.save(CLIPS_DIR / fname)
+    return jsonify({"ok": True, "filename": fname})
+
+
+@app.route("/extract_outline", methods=["POST"])
+def extract_outline():
+    f = request.files["script"]
+    tmp = Path(tempfile.gettempdir()) / f"vbvn_outline_extract_{uuid.uuid4().hex[:8]}.docx"
+    f.save(tmp)
+    try:
+        points = eng.extract_outline_from_script(tmp)
+    finally:
+        tmp.unlink(missing_ok=True)
+    return jsonify({"titles": [t for t, _ in points]})
+
+
+@app.route("/generate_clip", methods=["POST"])
+def generate_clip():
+    data = request.get_json()
+    kind = data.get("kind", "intro")
+    text = data.get("text", "")
+    duration = float(data.get("duration", 4))
+    s = data["settings"]
+
+    out_path = CLIPS_DIR / f"{kind}_{uuid.uuid4().hex[:8]}.mp4"
+    ok, err = _generate_clip(s, kind, text, duration, out_path)
+    if not ok:
+        return jsonify({"ok": False, "error": err[-1500:]}), 400
+    return jsonify({"ok": True, "filename": out_path.name})
+
+
+def _generate_clip(s, kind, text, duration, out_path):
+    import subprocess
+    import tempfile
+
+    ffmpeg = eng.find_ffmpeg()
+    glow_loop = Path(tempfile.gettempdir()) / f"vbvn_web_clipgen_{uuid.uuid4().hex[:8]}.mp4"
+    half = s["pulse_speed"] / 2
+    glow_src, glow_pad = 600, 700
+    canvas = glow_src + glow_pad * 2
+    cmd1 = [
+        ffmpeg, "-f", "lavfi",
+        "-i", f"color=c={s['glow_color']}:s={glow_src}x{glow_src}:r={s['fps']}",
+        "-filter_complex",
+        f"[0:v]pad={canvas}:{canvas}:{glow_pad}:{glow_pad}:black,"
+        f"gblur=sigma={s['glow_sigma']},"
+        f"fade=t=in:st=0:d={half}:color=black,"
+        f"fade=t=out:st={half}:d={half}:color=black[out]",
+        "-map", "[out]", "-c:v", "libx264", "-preset", "fast", "-crf", "18",
+        "-t", str(s["pulse_speed"]), str(glow_loop), "-y", "-loglevel", "error",
+    ]
+    r = subprocess.run(cmd1, capture_output=True, text=True)
+    if r.returncode != 0:
+        return False, r.stderr
+
+    bg_chain = eng.build_bg_chain(s, s["fps"])
+
+    text_filter = ""
+    if text:
+        text = text.replace(r"\n", "\n")
+        escaped = text.replace("\\", "\\\\\\\\").replace(":", "\\:").replace("'", "\\'")
+        text_filter = (
+            f",drawtext=text='{escaped}':font={s['title_font']}:"
+            f"fontsize={s['title_font_size']}:fontcolor={s['title_color']}:"
+            f"x=(w-text_w)/2:y=(h-text_h)/2:box=1:boxcolor=black@0.4:boxborderw=12"
+        )
+
+    filter_complex = (
+        f"[0:v]format=rgb24[glow_pulsed];"
+        f"{bg_chain};"
+        f"[bg][glow_pulsed]overlay=(W-w)/2:(H-h)/2:format=auto"
+        f"{text_filter},"
+        f"fade=t=in:st=0:d=0.5,fade=t=out:st={duration - 0.5}:d=0.5[out]"
+    )
+
+    cmd2 = [
+        ffmpeg,
+        "-stream_loop", "-1", "-i", str(glow_loop),
+        "-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100",
+        "-filter_complex", filter_complex,
+        "-map", "[out]", "-map", "1:a",
+        "-t", str(duration),
+        "-c:v", "libx264", "-preset", "medium", "-crf", "18", "-pix_fmt", "yuv420p",
+        "-c:a", "aac", "-b:a", "192k", "-ar", "44100",
+        "-movflags", "+faststart",
+        str(out_path), "-y", "-loglevel", "error",
+    ]
+    r = subprocess.run(cmd2, capture_output=True, text=True)
+    glow_loop.unlink(missing_ok=True)
+    if r.returncode != 0:
+        return False, r.stderr
+    return True, ""
+
+
+@app.route("/render", methods=["POST"])
+def render():
+    settings = json.loads(request.form["settings"])
+    title = request.form.get("title", "").strip()
+    preview = request.form.get("preview", "").lower() in ("1", "true", "yes")
+    outline_titles_raw = request.form.get("outline_titles", "")
+    outline_titles = json.loads(outline_titles_raw) if outline_titles_raw else None
+
+    audio_file = request.files["audio"]
+    audio_name = secure_filename(audio_file.filename)
+    job_id = uuid.uuid4().hex[:12]
+    job_dir = UPLOAD_DIR / job_id
+    job_dir.mkdir(parents=True, exist_ok=True)
+    audio_path = job_dir / audio_name
+    audio_file.save(audio_path)
+
+    art_name = settings.get("art", "")
+    art_path = ART_DIR / art_name
+    if not art_path.exists():
+        return jsonify({"error": f"Art image not found: {art_name}"}), 400
+
+    # resolve intro/outro/generated clip paths relative to CLIPS_DIR if not absolute
+    for key in ("intro_path", "outro_path", "bg_video_path"):
+        val = settings.get(key, "")
+        if val and not Path(val).is_absolute():
+            candidate = CLIPS_DIR / val
+            if candidate.exists():
+                settings[key] = str(candidate)
+
+    # resolve watermark image path relative to ART_DIR if not absolute
+    val = settings.get("watermark_path", "")
+    if val and not Path(val).is_absolute():
+        candidate = ART_DIR / val
+        if candidate.exists():
+            settings["watermark_path"] = str(candidate)
+
+    script_path = None
+    if "script" in request.files:
+        script_file = request.files["script"]
+        if script_file and script_file.filename:
+            script_path = job_dir / secure_filename(script_file.filename)
+            script_file.save(script_path)
+
+    out_name = Path(audio_name).stem + (".preview.mp4" if preview else ".mp4")
+    output_path = OUTPUT_DIR / job_id / out_name
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    _enqueue_job(job_id, settings, audio_path, art_path, output_path,
+                  title=title, script_path=script_path, audio_name=audio_name,
+                  preview=preview, outline_titles=outline_titles)
+
+    return jsonify({"job_id": job_id})
+
+
+def _enqueue_job(job_id, settings, audio_path, art_path, output_path, title="",
+                  script_path=None, audio_name="", preview=False, outline_titles=None):
+    with JOBS_LOCK:
+        JOBS[job_id] = {
+            "status": "queued",
+            "stage": "Queued" + (f" (position {JOB_QUEUE.qsize() + 1})" if JOB_QUEUE.qsize() else ""),
+            "progress": 0.0,
+            "log": [],
+            "output": None,
+            "output_name": output_path.name,
+            "output_path": str(output_path),
+            "audio_path": str(audio_path),
+            "art_path": str(art_path),
+            "script_path": str(script_path) if script_path else None,
+            "settings": settings,
+            "title": title,
+            "audio_name": audio_name,
+            "preview": preview,
+            "preview_seconds": 12 if preview else None,
+            "outline_titles": outline_titles,
+            "created": time.time(),
+        }
+    _save_jobs()
+    JOB_QUEUE.put(job_id)
+
+
+@app.route("/status/<job_id>")
+def status(job_id):
+    with JOBS_LOCK:
+        job = JOBS.get(job_id)
+        if not job:
+            return jsonify({"error": "not found"}), 404
+        return jsonify({
+            "status": job["status"],
+            "stage": job["stage"],
+            "progress": job["progress"],
+            "log": job["log"][-30:],
+        })
+
+
+@app.route("/history")
+def history():
+    with JOBS_LOCK:
+        items = []
+        for job_id, job in JOBS.items():
+            items.append({
+                "job_id": job_id,
+                "status": job["status"],
+                "stage": job.get("stage", ""),
+                "progress": job.get("progress", 0),
+                "title": job.get("title") or job.get("audio_name", ""),
+                "audio_name": job.get("audio_name", ""),
+                "preview": job.get("preview", False),
+                "created": job.get("created", 0),
+                "downloadable": bool(job.get("output")),
+            })
+        items.sort(key=lambda j: j["created"], reverse=True)
+    return jsonify(items)
+
+
+@app.route("/rerun/<job_id>", methods=["POST"])
+def rerun(job_id):
+    with JOBS_LOCK:
+        old = JOBS.get(job_id)
+        if not old:
+            return jsonify({"error": "not found"}), 404
+        old = dict(old)
+
+    audio_path = Path(old["audio_path"])
+    if not audio_path.exists():
+        return jsonify({"error": "Original audio file no longer available"}), 400
+
+    new_id = uuid.uuid4().hex[:12]
+    new_dir = UPLOAD_DIR / new_id
+    new_dir.mkdir(parents=True, exist_ok=True)
+
+    new_audio = new_dir / audio_path.name
+    shutil.copy(audio_path, new_audio)
+
+    new_script = None
+    if old.get("script_path") and Path(old["script_path"]).exists():
+        src_script = Path(old["script_path"])
+        new_script = new_dir / src_script.name
+        shutil.copy(src_script, new_script)
+
+    out_name = Path(old["output_name"]).name
+    output_path = OUTPUT_DIR / new_id / out_name
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    _enqueue_job(
+        new_id, old["settings"], new_audio, Path(old["art_path"]), output_path,
+        title=old.get("title", ""), script_path=new_script,
+        audio_name=old.get("audio_name", ""), preview=old.get("preview", False),
+        outline_titles=old.get("outline_titles"),
+    )
+    return jsonify({"job_id": new_id})
+
+
+@app.route("/delete/<job_id>", methods=["POST"])
+def delete_job(job_id):
+    with JOBS_LOCK:
+        job = JOBS.pop(job_id, None)
+    if not job:
+        return jsonify({"error": "not found"}), 404
+    if job["status"] in ("running", "queued"):
+        with JOBS_LOCK:
+            JOBS[job_id] = job
+        return jsonify({"error": "Cannot delete a job that is running or queued"}), 400
+
+    shutil.rmtree(UPLOAD_DIR / job_id, ignore_errors=True)
+    shutil.rmtree(OUTPUT_DIR / job_id, ignore_errors=True)
+    _save_jobs()
+    return jsonify({"ok": True})
+
+
+@app.route("/download/<job_id>")
+def download(job_id):
+    with JOBS_LOCK:
+        job = JOBS.get(job_id)
+        if not job or not job.get("output"):
+            return "Not ready", 404
+        path = job["output"]
+        name = job["output_name"]
+    return send_file(path, as_attachment=True, download_name=name)
+
+
+@app.route("/art/<path:filename>")
+def serve_art(filename):
+    return send_file(ART_DIR / secure_filename(filename))
+
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=8000, debug=False)

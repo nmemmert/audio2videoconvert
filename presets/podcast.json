@@ -1,0 +1,20 @@
+{
+  "art": "podcast-art.png",
+  "art_size": 700,
+  "bg_color": "black",
+  "glow_color": "#c9a84c",
+  "glow_sigma": 220,
+  "pulse_speed": 3.0,
+  "breathe_amount": 0.02,
+  "width": 1920,
+  "height": 1080,
+  "fps": 30,
+  "font_name": "Cormorant Garamond",
+  "font_fallback": "Georgia",
+  "font_size": 72,
+  "words_per_chunk": 2,
+  "caption_color": "&H50D8EAF0",
+  "caption_highlight": "&H004CA8C9",
+  "caption_back": "&HBF000000",
+  "caption_y": 900
+}

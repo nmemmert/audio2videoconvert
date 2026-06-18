@@ -1,0 +1,611 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Podcast Video Generator</title>
+<style>
+  :root { --bg:#1a1a2e; --panel:#22223a; --accent:#c9a84c; --text:#eee; --muted:#999; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: -apple-system, Segoe UI, Roboto, sans-serif; background:var(--bg); color:var(--text); }
+  header { padding: 16px 24px; background:#15152a; border-bottom:1px solid #333; }
+  header h1 { margin:0; font-size:20px; color:var(--accent); }
+  .layout { display:flex; gap:16px; padding:16px; flex-wrap:wrap; }
+  .panel { background:var(--panel); border-radius:8px; padding:16px; flex:1; min-width:320px; }
+  .panel h2 { margin-top:0; font-size:16px; color:var(--accent); border-bottom:1px solid #333; padding-bottom:8px; }
+  label { display:block; margin:10px 0 4px; font-size:13px; color:var(--muted); }
+  input, select, textarea { width:100%; padding:6px 8px; border-radius:4px; border:1px solid #444; background:#2a2a44; color:var(--text); font-size:13px; }
+  input[type=color] { padding:2px; height:32px; }
+  input[type=checkbox] { width:auto; }
+  .row { display:flex; gap:8px; align-items:center; }
+  .row > * { flex:1; }
+  fieldset { border:1px solid #333; border-radius:6px; margin:12px 0; padding:8px 12px; }
+  legend { color:var(--accent); font-size:13px; padding:0 6px; }
+  button { background:var(--accent); color:#1a1a2e; border:none; border-radius:4px; padding:8px 14px; font-weight:600; cursor:pointer; font-size:13px; }
+  button.secondary { background:#3a3a5a; color:var(--text); }
+  button:disabled { opacity:0.5; cursor:default; }
+  .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+  #art-preview { max-width:160px; max-height:160px; border-radius:6px; margin-top:6px; border:1px solid #444; }
+  #progress-wrap { margin-top:12px; }
+  progress { width:100%; height:18px; }
+  #log { background:#111; color:#0f0; font-family:monospace; font-size:11px; padding:8px; height:140px; overflow-y:auto; border-radius:4px; margin-top:8px; white-space:pre-wrap; }
+  #download-link { display:none; margin-top:10px; }
+  .small { font-size:11px; color:var(--muted); }
+</style>
+</head>
+<body>
+<header><h1>🎙 Podcast Video Generator</h1></header>
+<div class="layout">
+
+  <div class="panel" style="max-width:380px;">
+    <h2>Render</h2>
+
+    <label>Preset</label>
+    <select id="preset-select"></select>
+
+    <label>Episode title (overlay text)</label>
+    <input type="text" id="title">
+
+    <label>Audio file (.m4a / .mp3 / .wav)</label>
+    <input type="file" id="audio-file" accept="audio/*">
+
+    <label>Episode script (.docx, optional — used for outline)</label>
+    <input type="file" id="script-file" accept=".docx">
+
+    <div id="outline-titles-wrap" style="display:none;">
+      <label>Outline wording (edit as needed)</label>
+      <div id="outline-titles-list"></div>
+    </div>
+
+    <div id="progress-wrap" style="display:none;">
+      <div class="small"><span id="stage-label">—</span> — <span id="pct-label">0%</span></div>
+      <progress id="progress-bar" value="0" max="1"></progress>
+      <div id="log"></div>
+      <a id="download-link" href="#"><button type="button">⬇ Download video</button></a>
+    </div>
+
+    <div style="margin-top:14px;" class="row">
+      <button id="render-btn">▶ Render Video</button>
+      <button id="preview-btn" class="secondary" type="button">👁 Preview (12s)</button>
+    </div>
+  </div>
+
+  <div class="panel" style="max-width:380px;">
+    <h2>Job History</h2>
+    <div id="history-list"></div>
+  </div>
+
+  <div class="panel">
+    <h2>Visual Settings</h2>
+
+    <fieldset>
+      <legend>Art</legend>
+      <label>Cover art image</label>
+      <select id="art-select"></select>
+      <label>Upload new art</label>
+      <input type="file" id="art-upload" accept="image/*">
+      <img id="art-preview" src="">
+      <label>Art size (px)</label>
+      <input type="number" id="art_size">
+      <label>Art horizontal offset (px, positive = shift right)</label>
+      <input type="number" id="art_x_offset">
+    </fieldset>
+
+    <fieldset>
+      <legend>Background</legend>
+      <div class="grid2">
+        <div>
+          <label>Style</label>
+          <select id="bg_style"></select>
+        </div>
+        <div></div>
+        <div>
+          <label>Background color</label>
+          <input type="color" id="bg_color">
+        </div>
+        <div>
+          <label>Background color 2 (gradient)</label>
+          <input type="color" id="bg_color2">
+        </div>
+      </div>
+      <label><input type="checkbox" id="waveform_enabled"> Show audio waveform overlay</label>
+      <label>Waveform color</label>
+      <input type="color" id="waveform_color">
+
+      <div id="bgvideo-row" style="margin-top:8px; display:none;">
+        <label>Background video (looped)</label>
+        <div class="row">
+          <select id="bgvideo-select"></select>
+          <input type="file" id="bgvideo-upload" accept="video/*" style="flex:0 0 auto; width:auto;">
+        </div>
+      </div>
+    </fieldset>
+
+    <fieldset>
+      <legend>Extras</legend>
+      <label><input type="checkbox" id="chapter_cards_enabled"> Show chapter title cards at section transitions</label>
+
+      <label style="margin-top:10px;"><input type="checkbox" id="watermark_enabled"> Show watermark / logo overlay</label>
+      <div class="row">
+        <select id="watermark-select"></select>
+        <input type="file" id="watermark-upload" accept="image/*" style="flex:0 0 auto; width:auto;">
+      </div>
+      <label>Watermark size (px width)</label>
+      <input type="number" id="watermark_size">
+
+      <label style="margin-top:10px;"><input type="checkbox" id="endcard_enabled"> Show end-card message</label>
+      <label>End-card text</label>
+      <textarea id="endcard_text" rows="2" placeholder="Thanks for listening — subscribe for more!"></textarea>
+      <label>End-card duration (seconds)</label>
+      <input type="number" id="endcard_seconds">
+    </fieldset>
+
+    <fieldset>
+      <legend>Glow</legend>
+      <div class="grid2">
+        <div><label>Glow color</label><input type="color" id="glow_color"></div>
+        <div><label>Glow blur sigma</label><input type="number" id="glow_sigma"></div>
+        <div><label>Pulse speed (sec)</label><input type="number" step="0.1" id="pulse_speed"></div>
+        <div><label>Breathe amount</label><input type="number" step="0.01" id="breathe_amount"></div>
+      </div>
+    </fieldset>
+
+    <fieldset>
+      <legend>Video</legend>
+      <div class="grid2">
+        <div><label>Width</label><input type="number" id="width"></div>
+        <div><label>Height</label><input type="number" id="height"></div>
+        <div><label>FPS</label><input type="number" id="fps"></div>
+      </div>
+    </fieldset>
+
+    <fieldset>
+      <legend>Title overlay</legend>
+      <div class="grid2">
+        <div><label>Font</label><input type="text" id="title_font"></div>
+        <div><label>Font size</label><input type="number" id="title_font_size"></div>
+      </div>
+      <label>Title color</label>
+      <input type="color" id="title_color">
+    </fieldset>
+  </div>
+
+  <div class="panel">
+    <h2>Captions</h2>
+    <div class="grid2">
+      <div><label>Font</label><input type="text" id="font_name"></div>
+      <div><label>Fallback font</label><input type="text" id="font_fallback"></div>
+      <div><label>Font size</label><input type="number" id="font_size"></div>
+      <div><label>Words per chunk</label><input type="number" id="words_per_chunk"></div>
+      <div><label>Caption Y position</label><input type="number" id="caption_y"></div>
+      <div>
+        <label>Animation style</label>
+        <select id="caption_style"></select>
+      </div>
+    </div>
+    <label>Caption color</label>
+    <input type="color" id="caption_color_hex">
+    <label>Highlight color</label>
+    <input type="color" id="caption_highlight_hex">
+    <label>Background color (caption box)</label>
+    <input type="color" id="caption_back_hex">
+
+    <fieldset style="margin-top:16px;">
+      <legend>Intro / Outro</legend>
+      <label>Intro clip</label>
+      <div class="row">
+        <select id="intro-select"></select>
+        <input type="file" id="intro-upload" accept="video/*" style="flex:0 0 auto; width:auto;">
+      </div>
+      <label>Outro clip</label>
+      <div class="row">
+        <select id="outro-select"></select>
+        <input type="file" id="outro-upload" accept="video/*" style="flex:0 0 auto; width:auto;">
+      </div>
+      <div style="margin-top:8px;">
+        <button type="button" class="secondary" onclick="generateClip('intro')">Generate intro clip…</button>
+        <button type="button" class="secondary" onclick="generateClip('outro')">Generate outro clip…</button>
+      </div>
+    </fieldset>
+
+    <fieldset style="margin-top:16px;">
+      <legend>Outline (left side, via local Ollama)</legend>
+      <label><input type="checkbox" id="outline_enabled"> Show progressive topic outline</label>
+      <div class="grid2">
+        <div><label>Ollama URL</label><input type="text" id="ollama_url"></div>
+        <div><label>Ollama model</label><input type="text" id="ollama_model"></div>
+        <div><label>Outline font</label><input type="text" id="outline_font"></div>
+        <div><label>Outline font size</label><input type="number" id="outline_font_size"></div>
+      </div>
+      <label>Outline text color</label>
+      <input type="color" id="outline_color">
+      <p class="small">Requires Ollama running locally (or reachable at the URL above) with the chosen model pulled. Each outline point appears at its topic's timestamp and stays on screen.</p>
+    </fieldset>
+
+    <div style="margin-top:14px;">
+      <label>Save current settings as preset</label>
+      <div class="row">
+        <input type="text" id="preset-name" placeholder="My Preset">
+        <button type="button" class="secondary" onclick="savePreset()">Save</button>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+const DEFAULTS = {{ defaults|tojson }};
+const BG_STYLES = {{ bg_styles|tojson }};
+const CAPTION_STYLES = {{ caption_styles|tojson }};
+let ART_FILES = {{ art_files|tojson }};
+let CLIPS = {{ clips|tojson }};
+let WATERMARKS = {{ watermarks|tojson }};
+let BG_VIDEOS = {{ bg_videos|tojson }};
+let PRESETS = {{ presets|tojson }};
+
+const ASS_COLOR_FIELDS = {caption_color: 'caption_color_hex', caption_highlight: 'caption_highlight_hex', caption_back: 'caption_back_hex'};
+
+function assToRgbHex(ass) {
+  try {
+    let digits = ass.toUpperCase().replace('&H','').padStart(8,'0');
+    let bb = digits.slice(2,4), gg = digits.slice(4,6), rr = digits.slice(6,8);
+    return '#' + rr + gg + bb;
+  } catch(e) { return '#000000'; }
+}
+function rgbHexToAss(hex, originalAss) {
+  let alpha = '00';
+  try { alpha = originalAss.toUpperCase().replace('&H','').padStart(8,'0').slice(0,2); } catch(e) {}
+  hex = hex.replace('#','');
+  let rr = hex.slice(0,2), gg = hex.slice(2,4), bb = hex.slice(4,6);
+  return ('&H' + alpha + bb + gg + rr).toUpperCase();
+}
+function toHexColor(value) {
+  if (!value) return '#000000';
+  if (value.startsWith('&H')) return assToRgbHex(value);
+  if (value.startsWith('#')) return value;
+  // named color fallback
+  const named = {black:'#000000', white:'#ffffff'};
+  return named[value] || '#000000';
+}
+
+let currentSettings = Object.assign({}, DEFAULTS);
+let assOriginals = {caption_color: DEFAULTS.caption_color, caption_highlight: DEFAULTS.caption_highlight, caption_back: DEFAULTS.caption_back};
+
+function populateSelect(id, items, value) {
+  const el = document.getElementById(id);
+  el.innerHTML = '';
+  items.forEach(item => {
+    const opt = document.createElement('option');
+    opt.value = item; opt.textContent = item;
+    if (item === value) opt.selected = true;
+    el.appendChild(opt);
+  });
+}
+
+function applySettings(s) {
+  currentSettings = Object.assign({}, DEFAULTS, s);
+  for (const [key, val] of Object.entries(currentSettings)) {
+    const el = document.getElementById(key);
+    if (!el) continue;
+    if (el.type === 'checkbox') el.checked = !!val;
+    else if (el.type === 'color') el.value = toHexColor(String(val));
+    else el.value = val;
+  }
+  for (const [key, hexId] of Object.entries(ASS_COLOR_FIELDS)) {
+    assOriginals[key] = currentSettings[key];
+    document.getElementById(hexId).value = assToRgbHex(currentSettings[key]);
+  }
+  populateSelect('art-select', ART_FILES, currentSettings.art);
+  refreshArtPreview();
+  populateSelect('intro-select', ['(none)', ...CLIPS], currentSettings.intro_path || '(none)');
+  populateSelect('outro-select', ['(none)', ...CLIPS], currentSettings.outro_path || '(none)');
+  populateSelect('bgvideo-select', ['(none)', ...BG_VIDEOS], currentSettings.bg_video_path || '(none)');
+  populateSelect('watermark-select', ['(none)', ...WATERMARKS], currentSettings.watermark_path || '(none)');
+  toggleBgVideoRow();
+}
+
+function toggleBgVideoRow() {
+  document.getElementById('bgvideo-row').style.display =
+    (document.getElementById('bg_style').value === 'video') ? 'block' : 'none';
+}
+document.getElementById('bg_style').addEventListener('change', toggleBgVideoRow);
+
+function gatherSettings() {
+  const out = Object.assign({}, currentSettings);
+  const numeric = ['art_size','art_x_offset','glow_sigma','pulse_speed','breathe_amount','width','height','fps','font_size','words_per_chunk','caption_y','title_font_size','outline_font_size','endcard_seconds','watermark_size'];
+  for (const key of Object.keys(DEFAULTS)) {
+    const el = document.getElementById(key);
+    if (!el) continue;
+    if (el.type === 'checkbox') out[key] = el.checked;
+    else if (el.type === 'color') {
+      if (ASS_COLOR_FIELDS[key]) continue; // handled below
+      out[key] = el.value;
+    } else if (numeric.includes(key)) {
+      out[key] = parseFloat(el.value);
+    } else {
+      out[key] = el.value;
+    }
+  }
+  for (const [key, hexId] of Object.entries(ASS_COLOR_FIELDS)) {
+    out[key] = rgbHexToAss(document.getElementById(hexId).value, assOriginals[key]);
+  }
+  out.art = document.getElementById('art-select').value;
+  const introSel = document.getElementById('intro-select').value;
+  const outroSel = document.getElementById('outro-select').value;
+  out.intro_path = (introSel === '(none)') ? '' : introSel;
+  out.outro_path = (outroSel === '(none)') ? '' : outroSel;
+  const bgvideoSel = document.getElementById('bgvideo-select').value;
+  const watermarkSel = document.getElementById('watermark-select').value;
+  out.bg_video_path = (bgvideoSel === '(none)') ? '' : bgvideoSel;
+  out.watermark_path = (watermarkSel === '(none)') ? '' : watermarkSel;
+  return out;
+}
+
+function refreshArtPreview() {
+  const art = document.getElementById('art-select').value;
+  const img = document.getElementById('art-preview');
+  if (art) { img.src = '/art/' + encodeURIComponent(art); img.style.display='block'; }
+  else img.style.display = 'none';
+}
+
+document.getElementById('art-select').addEventListener('change', refreshArtPreview);
+
+populateSelect('bg_style', BG_STYLES, DEFAULTS.bg_style);
+populateSelect('caption_style', CAPTION_STYLES, DEFAULTS.caption_style);
+populateSelect('preset-select', PRESETS, PRESETS[0]);
+
+async function loadPreset(name) {
+  const r = await fetch('/preset/' + encodeURIComponent(name));
+  const s = await r.json();
+  applySettings(s);
+}
+document.getElementById('preset-select').addEventListener('change', e => loadPreset(e.target.value));
+
+async function savePreset() {
+  const name = document.getElementById('preset-name').value.trim();
+  if (!name) { alert('Enter a preset name'); return; }
+  const settings = gatherSettings();
+  await fetch('/preset/' + encodeURIComponent(name), {
+    method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(settings)
+  });
+  if (!PRESETS.includes(name)) { PRESETS.push(name); populateSelect('preset-select', PRESETS, name); }
+  alert('Preset saved: ' + name);
+}
+
+document.getElementById('art-upload').addEventListener('change', async e => {
+  const f = e.target.files[0];
+  if (!f) return;
+  const fd = new FormData(); fd.append('file', f);
+  const r = await fetch('/upload/art', {method:'POST', body: fd});
+  const j = await r.json();
+  if (j.ok) {
+    ART_FILES.push(j.filename);
+    populateSelect('art-select', ART_FILES, j.filename);
+    refreshArtPreview();
+  }
+});
+
+async function uploadClip(kind, file) {
+  const fd = new FormData(); fd.append('file', file); fd.append('kind', kind);
+  const r = await fetch('/upload/clip', {method:'POST', body: fd});
+  const j = await r.json();
+  if (j.ok) {
+    CLIPS.push(j.filename);
+    const sel = kind === 'intro' ? 'intro-select' : 'outro-select';
+    populateSelect(sel, ['(none)', ...CLIPS], j.filename);
+  }
+}
+document.getElementById('intro-upload').addEventListener('change', e => { if (e.target.files[0]) uploadClip('intro', e.target.files[0]); });
+document.getElementById('outro-upload').addEventListener('change', e => { if (e.target.files[0]) uploadClip('outro', e.target.files[0]); });
+
+document.getElementById('bgvideo-upload').addEventListener('change', async e => {
+  const f = e.target.files[0];
+  if (!f) return;
+  const fd = new FormData(); fd.append('file', f);
+  const r = await fetch('/upload/bgvideo', {method:'POST', body: fd});
+  const j = await r.json();
+  if (j.ok) {
+    BG_VIDEOS.push(j.filename);
+    populateSelect('bgvideo-select', ['(none)', ...BG_VIDEOS], j.filename);
+  }
+});
+
+document.getElementById('watermark-upload').addEventListener('change', async e => {
+  const f = e.target.files[0];
+  if (!f) return;
+  const fd = new FormData(); fd.append('file', f);
+  const r = await fetch('/upload/watermark', {method:'POST', body: fd});
+  const j = await r.json();
+  if (j.ok) {
+    WATERMARKS.push(j.filename);
+    populateSelect('watermark-select', ['(none)', ...WATERMARKS], j.filename);
+  }
+});
+
+async function generateClip(kind) {
+  const text = prompt('Text to display (use \\n for new line):', kind === 'intro' ? 'Verse by Verse' : 'Thanks for listening!');
+  if (text === null) return;
+  const duration = prompt('Duration (seconds):', '4');
+  if (duration === null) return;
+  const settings = gatherSettings();
+  const r = await fetch('/generate_clip', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({kind, text, duration, settings})
+  });
+  const j = await r.json();
+  if (!j.ok) { alert('Failed: ' + j.error); return; }
+  CLIPS.push(j.filename);
+  const sel = kind === 'intro' ? 'intro-select' : 'outro-select';
+  populateSelect(sel, ['(none)', ...CLIPS], j.filename);
+}
+
+// initial load
+if (PRESETS.length) loadPreset(PRESETS[0]);
+else applySettings(DEFAULTS);
+
+// --- Outline title editing ---
+document.getElementById('script-file').addEventListener('change', async e => {
+  const f = e.target.files[0];
+  const wrap = document.getElementById('outline-titles-wrap');
+  const list = document.getElementById('outline-titles-list');
+  list.innerHTML = '';
+  if (!f) { wrap.style.display = 'none'; return; }
+  const fd = new FormData(); fd.append('script', f);
+  const r = await fetch('/extract_outline', {method:'POST', body: fd});
+  const j = await r.json();
+  if (!j.titles || !j.titles.length) { wrap.style.display = 'none'; return; }
+  j.titles.forEach(t => {
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;gap:6px;margin-bottom:4px;align-items:center;';
+    const inp = document.createElement('input');
+    inp.type = 'text'; inp.value = t; inp.dataset.original = t; inp.style.flex = '1';
+    const btn = document.createElement('button');
+    btn.type = 'button'; btn.textContent = '✕';
+    btn.title = 'Remove from outline';
+    btn.style.cssText = 'padding:2px 8px;cursor:pointer;flex-shrink:0;';
+    btn.addEventListener('click', () => row.remove());
+    row.appendChild(inp); row.appendChild(btn);
+    list.appendChild(row);
+  });
+  wrap.style.display = 'block';
+});
+
+function gatherOutlineTitles() {
+  const inputs = document.querySelectorAll('#outline-titles-list input');
+  if (!inputs.length) return null;
+  return Array.from(inputs).map(i => ({title: i.value, original: i.dataset.original || i.value}));
+}
+
+// --- Render / Preview ---
+let pollTimer = null;
+async function startRender(preview) {
+  const audioInput = document.getElementById('audio-file');
+  if (!audioInput.files[0]) { alert('Choose an audio file first.'); return; }
+  const settings = gatherSettings();
+  const fd = new FormData();
+  fd.append('audio', audioInput.files[0]);
+  fd.append('settings', JSON.stringify(settings));
+  fd.append('title', document.getElementById('title').value);
+  if (preview) fd.append('preview', '1');
+  const scriptInput = document.getElementById('script-file');
+  if (scriptInput.files[0]) fd.append('script', scriptInput.files[0]);
+  const outlineTitles = gatherOutlineTitles();
+  if (outlineTitles) fd.append('outline_titles', JSON.stringify(outlineTitles));
+
+  const renderBtn = document.getElementById('render-btn');
+  const previewBtn = document.getElementById('preview-btn');
+  renderBtn.disabled = true; previewBtn.disabled = true;
+  document.getElementById('progress-wrap').style.display = 'block';
+  document.getElementById('download-link').style.display = 'none';
+  document.getElementById('log').textContent = '';
+
+  const r = await fetch('/render', {method:'POST', body: fd});
+  const j = await r.json();
+  if (j.error) { alert(j.error); renderBtn.disabled = false; previewBtn.disabled = false; return; }
+  const jobId = j.job_id;
+  loadHistory();
+
+  pollTimer = setInterval(async () => {
+    const sr = await fetch('/status/' + jobId);
+    const sj = await sr.json();
+    document.getElementById('stage-label').textContent = sj.stage;
+    document.getElementById('pct-label').textContent = Math.round(sj.progress*100) + '%';
+    document.getElementById('progress-bar').value = sj.progress;
+    document.getElementById('log').textContent = sj.log.join('\n');
+    document.getElementById('log').scrollTop = document.getElementById('log').scrollHeight;
+    if (sj.status === 'done') {
+      clearInterval(pollTimer);
+      renderBtn.disabled = false; previewBtn.disabled = false;
+      const dl = document.getElementById('download-link');
+      dl.href = '/download/' + jobId;
+      dl.style.display = 'block';
+      loadHistory();
+    } else if (sj.status === 'failed') {
+      clearInterval(pollTimer);
+      renderBtn.disabled = false; previewBtn.disabled = false;
+      alert('Render failed — see log.');
+      loadHistory();
+    }
+  }, 1500);
+}
+document.getElementById('render-btn').addEventListener('click', () => startRender(false));
+document.getElementById('preview-btn').addEventListener('click', () => startRender(true));
+
+// --- Job history ---
+function fmtTime(ts) {
+  if (!ts) return '';
+  const d = new Date(ts * 1000);
+  return d.toLocaleString();
+}
+
+async function loadHistory() {
+  const r = await fetch('/history');
+  const items = await r.json();
+  const el = document.getElementById('history-list');
+  el.innerHTML = '';
+  if (!items.length) { el.innerHTML = '<p class="small">No jobs yet.</p>'; return; }
+  items.forEach(job => {
+    const card = document.createElement('div');
+    card.style.borderBottom = '1px solid #333';
+    card.style.padding = '8px 0';
+
+    const title = document.createElement('div');
+    title.textContent = (job.preview ? '[Preview] ' : '') + (job.title || job.audio_name);
+    title.style.fontWeight = '600';
+    card.appendChild(title);
+
+    const meta = document.createElement('div');
+    meta.className = 'small';
+    let statusText = job.status;
+    if (job.status === 'running' || job.status === 'queued') {
+      statusText += ` — ${job.stage} (${Math.round((job.progress||0)*100)}%)`;
+    }
+    meta.textContent = `${fmtTime(job.created)} — ${statusText}`;
+    card.appendChild(meta);
+
+    const actions = document.createElement('div');
+    actions.style.marginTop = '6px';
+    actions.style.display = 'flex';
+    actions.style.gap = '6px';
+
+    if (job.downloadable) {
+      const dl = document.createElement('a');
+      dl.href = '/download/' + job.job_id;
+      const dlBtn = document.createElement('button');
+      dlBtn.type = 'button'; dlBtn.textContent = '⬇';
+      dl.appendChild(dlBtn);
+      actions.appendChild(dl);
+    }
+
+    const rerunBtn = document.createElement('button');
+    rerunBtn.type = 'button'; rerunBtn.className = 'secondary'; rerunBtn.textContent = '↻ Re-run';
+    rerunBtn.onclick = async () => {
+      rerunBtn.disabled = true;
+      const rr = await fetch('/rerun/' + job.job_id, {method:'POST'});
+      const rj = await rr.json();
+      if (rj.error) { alert(rj.error); rerunBtn.disabled = false; return; }
+      loadHistory();
+    };
+    actions.appendChild(rerunBtn);
+
+    if (job.status !== 'running' && job.status !== 'queued') {
+      const delBtn = document.createElement('button');
+      delBtn.type = 'button'; delBtn.className = 'secondary'; delBtn.textContent = '🗑';
+      delBtn.onclick = async () => {
+        if (!confirm('Delete this job and its files?')) return;
+        await fetch('/delete/' + job.job_id, {method:'POST'});
+        loadHistory();
+      };
+      actions.appendChild(delBtn);
+    }
+
+    card.appendChild(actions);
+    el.appendChild(card);
+  });
+}
+
+loadHistory();
+setInterval(loadHistory, 5000);
+</script>
+</body>
+</html>
