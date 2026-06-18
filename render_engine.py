@@ -744,7 +744,7 @@ def _reencode_clip(ffmpeg, ffprobe, src, dst, s, progress_cb=None):
             str(dst), "-y", "-loglevel", "error",
         ]
     if progress_cb:
-        cmd = cmd[:-2]  # strip trailing "-y", "-loglevel", "error" before adding -progress
+        cmd = cmd[:-3]  # strip trailing "-y", "-loglevel", "error" before adding -progress
         total = _probe_duration(ffprobe, src)
         rc, err = _run_ffmpeg_with_progress(cmd + ["-y", "-loglevel", "error"], total, progress_cb)
         return rc == 0, err
@@ -761,10 +761,22 @@ def _add_intro_outro(ffmpeg, ffprobe, s, output, log_cb, progress_cb=None):
         if progress_cb:
             progress_cb(frac)
 
-    if s.get("intro_path"):
+    has_intro = bool(s.get("intro_path"))
+    has_outro = bool(s.get("outro_path"))
+    # Allocate progress budget: intro 15%, main 60%, outro 15%, concat 10%
+    # Segments only present if their clip is configured.
+    intro_budget = 0.15 if has_intro else 0.0
+    outro_budget = 0.15 if has_outro else 0.0
+    main_start = intro_budget
+    main_end = 1.0 - outro_budget - 0.10
+    outro_start = main_end
+    outro_end = outro_start + outro_budget
+    concat_start = outro_end
+
+    if has_intro:
         intro_re = tmpdir / "vbvn_intro.mp4"
         success, err = _reencode_clip(ffmpeg, ffprobe, s["intro_path"], intro_re, s,
-                                       progress_cb=lambda f: sub_progress(f * 0.2))
+                                       progress_cb=lambda f: sub_progress(f * intro_budget))
         if success:
             parts.append(intro_re)
         elif log_cb:
@@ -772,17 +784,17 @@ def _add_intro_outro(ffmpeg, ffprobe, s, output, log_cb, progress_cb=None):
 
     main_re = tmpdir / "vbvn_main.mp4"
     success, err = _reencode_clip(ffmpeg, ffprobe, output, main_re, s,
-                                   progress_cb=lambda f: sub_progress(0.2 + f * 0.6))
+                                   progress_cb=lambda f: sub_progress(main_start + f * (main_end - main_start)))
     if not success:
         if log_cb:
             log_cb(f"Main clip re-encode for concat failed, skipping intro/outro:\n{err[-800:]}")
         return
     parts.append(main_re)
 
-    if s.get("outro_path"):
+    if has_outro:
         outro_re = tmpdir / "vbvn_outro.mp4"
         success, err = _reencode_clip(ffmpeg, ffprobe, s["outro_path"], outro_re, s,
-                                       progress_cb=lambda f: sub_progress(0.8 + f * 0.1))
+                                       progress_cb=lambda f: sub_progress(outro_start + f * outro_budget))
         if success:
             parts.append(outro_re)
         elif log_cb:
@@ -815,7 +827,7 @@ def _add_intro_outro(ffmpeg, ffprobe, s, output, log_cb, progress_cb=None):
     ]
     total = sum(_probe_duration(ffprobe, p) for p in parts)
     rc, err = _run_ffmpeg_with_progress(cmd + ["-y", "-loglevel", "error"], total,
-                                         lambda f: sub_progress(0.9 + f * 0.1))
+                                         lambda f: sub_progress(concat_start + f * (1.0 - concat_start)))
     if rc == 0:
         shutil.move(str(final), str(output))
     elif log_cb:

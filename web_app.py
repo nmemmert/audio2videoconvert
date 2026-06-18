@@ -284,7 +284,7 @@ def _generate_clip(s, kind, text, duration, out_path):
     text_filter = ""
     if text:
         text = text.replace(r"\n", "\n")
-        escaped = text.replace("\\", "\\\\\\\\").replace(":", "\\:").replace("'", "\\'")
+        escaped = text.replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'")
         text_filter = (
             f",drawtext=text='{escaped}':font={s['title_font']}:"
             f"fontsize={s['title_font_size']}:fontcolor={s['title_color']}:"
