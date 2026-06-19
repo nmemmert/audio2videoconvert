@@ -1358,17 +1358,20 @@ def _generate_clip_ffmpeg(s, kind, text, duration, out_path, ffmpeg):
     import subprocess as sp
     glow_loop = Path(tempfile.gettempdir()) / f"vbvn_clipgen_{kind}.mp4"
     half = s["pulse_speed"] / 2
-    glow_src, glow_pad = 600, 700
+    # Use a smaller canvas for clip generation — the gblur is the main CPU cost
+    # and the visual result is identical at half the canvas size.
+    glow_src, glow_pad = 300, 350
     canvas_sz = glow_src + glow_pad * 2
+    sigma = max(1, int(s["glow_sigma"] / 2))
     cmd1 = [
         ffmpeg, "-f", "lavfi",
         "-i", f"color=c={s['glow_color']}:s={glow_src}x{glow_src}:r={s['fps']}",
         "-filter_complex",
         f"[0:v]pad={canvas_sz}:{canvas_sz}:{glow_pad}:{glow_pad}:black,"
-        f"gblur=sigma={s['glow_sigma']},"
+        f"gblur=sigma={sigma},"
         f"fade=t=in:st=0:d={half}:color=black,"
         f"fade=t=out:st={half}:d={half}:color=black[out]",
-        "-map", "[out]", "-c:v", "libx264", "-preset", "fast", "-crf", "18",
+        "-map", "[out]", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "22",
         "-t", str(s["pulse_speed"]), str(glow_loop), "-y", "-loglevel", "error",
     ]
     r = sp.run(cmd1, capture_output=True, text=True)
@@ -1399,7 +1402,7 @@ def _generate_clip_ffmpeg(s, kind, text, duration, out_path, ffmpeg):
         "-filter_complex", filter_complex,
         "-map", "[out]", "-map", "1:a",
         "-t", str(duration),
-        "-c:v", "libx264", "-preset", "medium", "-crf", "18", "-pix_fmt", "yuv420p",
+        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "20", "-pix_fmt", "yuv420p",
         "-c:a", "aac", "-b:a", "192k", "-ar", "44100",
         "-movflags", "+faststart",
         str(out_path), "-y", "-loglevel", "error",
