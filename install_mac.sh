@@ -58,19 +58,25 @@ fi
 
 # ── 5. App directory & files ──────────────────────────────────────────────────
 echo ""
-echo "==> Creating app directory at $APP_DIR"
+echo "==> Syncing app files to $APP_DIR"
 mkdir -p "$APP_DIR"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-echo "==> Copying app files from $SCRIPT_DIR to $APP_DIR"
-cp -v "$SCRIPT_DIR/podcast_video_gui.py" "$APP_DIR/"
-cp -v "$SCRIPT_DIR/render_engine.py"     "$APP_DIR/"
-cp -v "$SCRIPT_DIR/web_app.py"           "$APP_DIR/"
+
+# Always overwrite code files so re-running install_mac.sh acts as an update
+for f in podcast_video_gui.py render_engine.py web_app.py install_mac.sh update.sh; do
+    [ -f "$SCRIPT_DIR/$f" ] && cp -v "$SCRIPT_DIR/$f" "$APP_DIR/$f"
+done
 [ -f "$SCRIPT_DIR/make_podcast_video.sh" ] && { cp -v "$SCRIPT_DIR/make_podcast_video.sh" "$APP_DIR/"; chmod +x "$APP_DIR/make_podcast_video.sh"; }
-[ -d "$SCRIPT_DIR/presets"   ] && cp -rv "$SCRIPT_DIR/presets"   "$APP_DIR/"
+
+# Sync templates (always overwrite) but preserve user data dirs
 [ -d "$SCRIPT_DIR/templates" ] && cp -rv "$SCRIPT_DIR/templates" "$APP_DIR/"
-[ -d "$SCRIPT_DIR/art"       ] && cp -rv "$SCRIPT_DIR/art"       "$APP_DIR/"
-mkdir -p "$APP_DIR/generated_clips" "$APP_DIR/uploads" "$APP_DIR/output" "$APP_DIR/art"
+
+# Only copy presets and art if they don't already exist (don't overwrite user changes)
+[ -d "$SCRIPT_DIR/presets" ] && cp -rn "$SCRIPT_DIR/presets/." "$APP_DIR/presets/" 2>/dev/null || true
+[ -d "$SCRIPT_DIR/art"     ] && cp -rn "$SCRIPT_DIR/art/."     "$APP_DIR/art/"     2>/dev/null || true
+
+mkdir -p "$APP_DIR/generated_clips" "$APP_DIR/uploads" "$APP_DIR/output" "$APP_DIR/art" "$APP_DIR/presets"
 
 # ── 6. Python virtual environment ─────────────────────────────────────────────
 echo ""
