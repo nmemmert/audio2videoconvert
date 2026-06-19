@@ -1101,31 +1101,9 @@ def render_job(s, audio_path, output_path, art_path, title="", script_path=None,
             tmp_out.unlink(missing_ok=True)
             return False
 
-        progress("Trimming", 0)
-
-        adur_r = subprocess.run(
-            [ffprobe, "-v", "error", "-select_streams", "a:0",
-             "-show_entries", "stream=duration",
-             "-of", "default=noprint_wrappers=1:nokey=1", str(tmp_out)],
-            capture_output=True, text=True,
-        )
-        audio_dur = adur_r.stdout.strip()
-
-        trimmed_ok = False
-        if audio_dur:
-            # No +faststart here — stream copy + moov rewrite on a large file
-            # can take several minutes for no benefit on a local render.
-            rc, stderr = _run_ffmpeg_with_progress(
-                [ffmpeg, "-i", str(tmp_out), "-t", audio_dur,
-                 "-c", "copy", str(output), "-y", "-loglevel", "error"],
-                float(audio_dur), lambda frac: progress("Trimming", frac))
-            trimmed_ok = rc == 0
-
-        if trimmed_ok:
-            tmp_out.unlink(missing_ok=True)
-        else:
-            shutil.move(str(tmp_out), str(output))
-            log(f"[{audio.name}] Trim step failed — using untrimmed output.")
+        # Main encode already used -t {duration} so tmp_out is already the right length.
+        # Just rename it to the final output path.
+        shutil.move(str(tmp_out), str(output))
 
         if (s.get("intro_path") or s.get("outro_path")) and not preview_seconds:
             progress("Adding intro/outro", 0)
