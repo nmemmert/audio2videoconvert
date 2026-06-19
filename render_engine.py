@@ -876,19 +876,21 @@ def render_job(s, audio_path, output_path, art_path, title="", script_path=None,
     glow_color = detect_glow_color(art_path, s.get("glow_color", "#c9a84c"))
 
     glow_loop = Path(tempfile.gettempdir()) / f"vbvn_glow_loop_{os.getpid()}_{threading.get_ident()}.mp4"
+    progress("Preparing", 0)
     log("Generating glow loop…")
     half = s["pulse_speed"] / 2
-    glow_src, glow_pad = 600, 700
+    glow_src, glow_pad = 300, 350
     canvas = glow_src + glow_pad * 2
+    sigma = max(1, int(s["glow_sigma"] / 2))
     cmd = [
         ffmpeg, "-f", "lavfi",
         "-i", f"color=c={glow_color}:s={glow_src}x{glow_src}:r={s['fps']}",
         "-filter_complex",
         f"[0:v]pad={canvas}:{canvas}:{glow_pad}:{glow_pad}:black,"
-        f"gblur=sigma={s['glow_sigma']},"
+        f"gblur=sigma={sigma},"
         f"fade=t=in:st=0:d={half}:color=black,"
         f"fade=t=out:st={half}:d={half}:color=black[out]",
-        "-map", "[out]", "-c:v", "libx264", "-preset", "fast", "-crf", "18",
+        "-map", "[out]", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "22",
         "-t", str(s["pulse_speed"]), str(glow_loop), "-y", "-loglevel", "error",
     ]
     r = subprocess.run(cmd, capture_output=True, text=True)
