@@ -305,6 +305,11 @@ class App(tk.Tk):
         ttk.Button(script_row, text="Clear", command=self.clear_script).pack(side=tk.LEFT, padx=(4, 0))
         self._global_script_path = None
 
+        # Outline editor — shown after a script is loaded and points are extracted
+        self._outline_frame = ttk.LabelFrame(frame, text="Outline (edit wording, click ✕ to remove)")
+        # not packed yet — shown dynamically
+        self._outline_rows = []  # list of (original_title, StringVar, tk.Frame)
+
         columns = ("file", "title", "status", "progress")
         self.tree = ttk.Treeview(frame, columns=columns, show="headings", selectmode="extended")
         self.tree.heading("file",     text="Audio File")
@@ -959,13 +964,55 @@ class App(tk.Tk):
     def choose_script(self):
         path = filedialog.askopenfilename(title="Choose episode script",
                                            filetypes=[("Word documents", "*.docx"), ("All files", "*.*")])
-        if path:
-            self._global_script_path = Path(path)
-            self.script_label.config(text=_short_path(path), foreground="")
+        if not path:
+            return
+        self._global_script_path = Path(path)
+        self.script_label.config(text=_short_path(path), foreground="")
+        self._extract_and_show_outline(self._global_script_path)
 
     def clear_script(self):
         self._global_script_path = None
         self.script_label.config(text="(none)", foreground="gray")
+        self._clear_outline_editor()
+
+    def _extract_and_show_outline(self, script_path):
+        self._clear_outline_editor()
+        try:
+            points = eng.extract_outline_from_script(script_path)
+        except Exception as e:
+            self._log(f"Could not extract outline: {e}")
+            return
+        if not points:
+            return
+
+        self._outline_rows = []
+        for title, _anchor in points:
+            row_frame = ttk.Frame(self._outline_frame)
+            row_frame.pack(fill=tk.X, padx=4, pady=2)
+            var = tk.StringVar(value=title)
+            ttk.Entry(row_frame, textvariable=var).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 4))
+            self._outline_rows.append((title, var, row_frame))
+            # capture row_frame in closure
+            def _remove(rf=row_frame, rows=self._outline_rows):
+                rf.destroy()
+                rows[:] = [(o, v, f) for o, v, f in rows if f is not rf]
+            ttk.Button(row_frame, text="✕", width=2, command=_remove).pack(side=tk.LEFT)
+
+        self._outline_frame.pack(fill=tk.X, padx=6, pady=(0, 4),
+                                  before=self.tree)
+
+    def _clear_outline_editor(self):
+        for _orig, _var, row_frame in self._outline_rows:
+            row_frame.destroy()
+        self._outline_rows = []
+        self._outline_frame.pack_forget()
+
+    def _gather_outline_titles(self):
+        alive = [(o, v, f) for o, v, f in self._outline_rows if f.winfo_exists()]
+        self._outline_rows = alive
+        if not alive:
+            return None
+        return [{"title": v.get().strip() or o, "original": o} for o, v, _f in alive]
 
     def on_drop_files(self, event):
         if self.worker_thread and self.worker_thread.is_alive():
@@ -1332,6 +1379,7 @@ class App(tk.Tk):
                 self._log(msg)
 
             self._update_job_row(idx, status="Running…", progress=0)
+            outline_titles = self._gather_outline_titles()
 
             ok = eng.render_job(
                 s, audio, output, art_path,
@@ -1339,6 +1387,7 @@ class App(tk.Tk):
                 script_path=script_path,
                 progress_cb=progress_cb,
                 log_cb=log_cb,
+                outline_titles=outline_titles,
             )
 
             if ok:
