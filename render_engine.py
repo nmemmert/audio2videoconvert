@@ -1113,10 +1113,11 @@ def render_job(s, audio_path, output_path, art_path, title="", script_path=None,
 
         trimmed_ok = False
         if audio_dur:
+            # No +faststart here — stream copy + moov rewrite on a large file
+            # can take several minutes for no benefit on a local render.
             rc, stderr = _run_ffmpeg_with_progress(
                 [ffmpeg, "-i", str(tmp_out), "-t", audio_dur,
-                 "-c", "copy", "-movflags", "+faststart",
-                 str(output), "-y", "-loglevel", "error"],
+                 "-c", "copy", str(output), "-y", "-loglevel", "error"],
                 float(audio_dur), lambda frac: progress("Trimming", frac))
             trimmed_ok = rc == 0
 
