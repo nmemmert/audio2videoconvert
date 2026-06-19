@@ -102,51 +102,24 @@ exec "$VENV_DIR/bin/gunicorn" -w 1 -b 0.0.0.0:8000 --timeout 3600 web_app:app
 LAUNCHER
 chmod +x "$APP_DIR/run_web.sh"
 
-# ── 8. macOS .app bundle ──────────────────────────────────────────────────────
+# ── 8. macOS .app bundle (built with osacompile so macOS trusts it natively) ──
 echo ""
 echo "==> Creating macOS app bundle at $APP_BUNDLE"
 mkdir -p "$HOME/Applications"
-mkdir -p "$APP_BUNDLE/Contents/MacOS"
-mkdir -p "$APP_BUNDLE/Contents/Resources"
+rm -rf "$APP_BUNDLE"
 
-# Launcher binary inside the bundle
-cat > "$APP_BUNDLE/Contents/MacOS/PodcastVideoGUI" <<APPBIN
-#!/usr/bin/env bash
-# Launch the Podcast Video GUI desktop app
-cd "$APP_DIR"
-exec "$VENV_DIR/bin/python3" "$APP_DIR/podcast_video_gui.py"
-APPBIN
-chmod +x "$APP_BUNDLE/Contents/MacOS/PodcastVideoGUI"
+# Write a temporary AppleScript that launches the Python GUI in the background
+_TMPAS=$(mktemp /tmp/pvg_XXXXXX.applescript)
+cat > "$_TMPAS" <<APPLEFLOW
+do shell script "$VENV_DIR/bin/python3 $APP_DIR/podcast_video_gui.py > /tmp/podcast_gui.log 2>&1 &"
+APPLEFLOW
 
-# Info.plist
-cat > "$APP_BUNDLE/Contents/Info.plist" <<PLIST
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>CFBundleExecutable</key>
-    <string>PodcastVideoGUI</string>
-    <key>CFBundleIdentifier</key>
-    <string>com.versebyvverse.podcastvideogui</string>
-    <key>CFBundleName</key>
-    <string>Podcast Video GUI</string>
-    <key>CFBundleDisplayName</key>
-    <string>Podcast Video GUI</string>
-    <key>CFBundleVersion</key>
-    <string>1.0</string>
-    <key>CFBundleShortVersionString</key>
-    <string>1.0</string>
-    <key>CFBundlePackageType</key>
-    <string>APPL</string>
-    <key>LSMinimumSystemVersion</key>
-    <string>12.0</string>
-    <key>NSHighResolutionCapable</key>
-    <true/>
-    <key>LSUIElement</key>
-    <false/>
-</dict>
-</plist>
-PLIST
+osacompile -o "$APP_BUNDLE" "$_TMPAS"
+rm "$_TMPAS"
+
+# Give it a friendly display name
+/usr/libexec/PlistBuddy -c "Set :CFBundleName 'Podcast Video GUI'"        "$APP_BUNDLE/Contents/Info.plist" 2>/dev/null || true
+/usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName 'Podcast Video GUI'" "$APP_BUNDLE/Contents/Info.plist" 2>/dev/null || true
 
 # ── 9. Ollama (optional — for the AI outline feature) ─────────────────────────
 echo ""
