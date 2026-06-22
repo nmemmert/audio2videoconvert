@@ -512,9 +512,12 @@ def build_question_cards_ass(timed_questions, s, duration_f, out_path,
     card_cy = text_cy if text_cy is not None else card_y + card_h // 2
 
     pad = 60
-    text_w_px = card_w - pad * 2
-    # Font size scales with card width, capped for readability
-    font_size = max(28, min(56, card_w // 14))
+    # Text area width = the usable space on each side of card_cx, doubled.
+    # This prevents text from overflowing left into the outline or right off screen.
+    half_w = min(card_cx - card_x, (card_x + card_w) - card_cx) - pad
+    text_w_px = max(200, half_w * 2)
+    # Font size based on the actual text area width, not the full card
+    font_size = max(26, min(48, text_w_px // 20))
     chars_per_line = max(12, int(text_w_px / (font_size * 0.54)))
 
     header = f"""[Script Info]
@@ -775,6 +778,9 @@ def render_job(s, audio_path, output_path, art_path=None,
     art_area_x = sidebar_w
     art_area_w = width - sidebar_w
     art_x = art_area_x + (art_area_w - art_size) // 2 + s.get("art_x_offset", 0)
+    # Clamp so art never bleeds off screen edges
+    art_x = max(0, min(art_x, width - art_size))
+    art_y = max(0, min(art_y, height - art_size))
 
     # Captions sit above the art (bottom of caption text = top of art - padding)
     # ASS MarginV for alignment=2 (bottom-center): text bottom = height - MarginV
