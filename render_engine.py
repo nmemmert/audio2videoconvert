@@ -476,36 +476,55 @@ def align_questions_to_transcript(questions, segments):
     return result
 
 
-def build_question_cards_ass(timed_questions, s, duration_f, out_path, art_x, art_y, art_size):
-    """Overlay a fully-opaque dark card on the art area for each discussion question.
+def build_question_drawbox(timed_questions, duration_f, card_x, card_y, card_w, card_h):
+    """Return an ffmpeg drawbox filter string that covers the right panel during each question.
+    The box snaps in/out (instant); the ASS text layer handles the fade."""
+    if not timed_questions:
+        return ""
+    parts = []
+    for i, (start, text) in enumerate(timed_questions):
+        if start >= duration_f:
+            continue
+        next_start = timed_questions[i + 1][0] if i + 1 < len(timed_questions) else duration_f
+        end = min(next_start, start + 55, duration_f)
+        if end <= start:
+            continue
+        parts.append(f"between(t,{start:.3f},{end:.3f})")
+    if not parts:
+        return ""
+    enable = "gt(" + "+".join(parts) + ",0)"
+    return (f"drawbox=x={card_x}:y={card_y}:w={card_w}:h={card_h}"
+            f":color=0x0a0a0a@1.0:t=fill:enable='{enable}'")
 
-    Two ASS layers per question:
-      Layer 0 — solid black rectangle drawn over the entire art area
-      Layer 1 — question text centred inside it
-    Both fade in/out with \fad so the art smoothly hides then reappears.
+
+def build_question_cards_ass(timed_questions, s, duration_f, out_path,
+                              card_x, card_y, card_w, card_h):
+    """ASS text overlay for discussion question cards.
+    The dark background is handled separately by build_question_drawbox().
+    Text is centred in the card area and fades in/out.
     """
     import textwrap as _tw
 
     font = s.get("outline_font", "Georgia")
     width, height = s["width"], s["height"]
-    art_cx = art_x + art_size // 2
-    art_cy = art_y + art_size // 2
+    card_cx = card_x + card_w // 2
+    card_cy = card_y + card_h // 2
 
-    pad = 40
-    text_w_px = art_size - pad * 2
-    font_size = max(22, min(42, art_size // 10))
-    chars_per_line = max(10, int(text_w_px / (font_size * 0.56)))
+    pad = 60
+    text_w_px = card_w - pad * 2
+    # Font size scales with card width, capped for readability
+    font_size = max(28, min(56, card_w // 14))
+    chars_per_line = max(12, int(text_w_px / (font_size * 0.54)))
 
     header = f"""[Script Info]
 ScriptType: v4.00+
 PlayResX: {width}
 PlayResY: {height}
-WrapStyle: 0
+WrapStyle: 2
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Box,Arial,1,&H00000000,&H00000000,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,0,0,7,0,0,0,1
-Style: Text,{font},{font_size},&H00FFFFFF,&H00FFFFFF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,1,0,5,0,0,0,1
+Style: Text,{font},{font_size},&H00FFFFFF,&H00FFFFFF,&H00000000,&H00000000,0,0,0,0,100,100,2,0,1,1,0,5,0,0,0,1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -521,21 +540,11 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             continue
 
         s_fmt, e_fmt = _ass_fmt(start), _ass_fmt(end)
-
-        # Layer 0: solid black rectangle over the art area.
-        # \1a&H00& = primary alpha fully opaque. All tags BEFORE \p1.
-        box_tag = (f"{{\\an7\\pos({art_x},{art_y})"
-                   f"\\c&H000000&\\1a&H00&\\2a&HFF&\\3a&HFF&\\4a&HFF&"
-                   f"\\fad(600,600)\\p1}}")
-        box_draw = f"m 0 0 l {art_size} 0 l {art_size} {art_size} l 0 {art_size}"
-        lines.append(f"Dialogue: 0,{s_fmt},{e_fmt},Box,,0,0,0,,{box_tag}{box_draw}{{\\p0}}")
-
-        # Layer 1: question text centred over the dark card
         escaped = text.replace("\\", "\\\\").replace("{", "").replace("}", "")
         wrapped = _tw.wrap(escaped, chars_per_line) or [escaped]
         ass_text = r"\N".join(wrapped)
-        text_tag = f"{{\\an5\\pos({art_cx},{art_cy})\\fad(600,600)}}"
-        lines.append(f"Dialogue: 1,{s_fmt},{e_fmt},Text,,0,0,0,,{text_tag}{ass_text}")
+        tag = f"{{\\an5\\pos({card_cx},{card_cy})\\fad(700,700)}}"
+        lines.append(f"Dialogue: 0,{s_fmt},{e_fmt},Text,,0,0,0,,{tag}{ass_text}")
 
     out_path.write_text("\n".join(lines))
 
@@ -882,16 +891,25 @@ def render_job(s, audio_path, output_path, art_path=None,
 
         # ── Discussion question cards ────────────────────────────────────────
         question_ass_path = None
+        _q_drawbox = ""
         if s.get("question_cards_enabled") and script_path:
             progress("Building question cards", 0)
             q_raw = extract_discussion_questions(script_path)
             if q_raw and _saved_segments:
                 timed_q = align_questions_to_transcript(q_raw, _saved_segments)
                 if timed_q:
+                    # Card fills the full right panel (right of sidebar, above waveform)
+                    q_card_x = sidebar_w
+                    q_card_y = 0
+                    q_card_w = width - sidebar_w
+                    q_card_h = height - wave_h
                     question_ass_path = Path(tempfile.gettempdir()) / f"vbvn_q_{os.getpid()}.ass"
                     build_question_cards_ass(timed_q, s, duration_f, question_ass_path,
-                                             art_x, art_y, art_size)
+                                             q_card_x, q_card_y, q_card_w, q_card_h)
                     sub_filter += f",subtitles={question_ass_path.as_posix()}"
+                    # Store drawbox info for later insertion into filter graph
+                    _q_drawbox = build_question_drawbox(timed_q, duration_f,
+                                                        q_card_x, q_card_y, q_card_w, q_card_h)
                     log(f"Discussion questions: {len(timed_q)} cards.")
                 else:
                     log("Could not align discussion questions to transcript.")
@@ -966,6 +984,11 @@ def render_job(s, audio_path, output_path, art_path=None,
             fp.append(f"[{audio_idx}:a]showwaves=s={width}x{wave_h}:mode=cline:colors={wc},format=rgba[wave]")
             fp.append(f"{prev}[wave]overlay=0:{height - wave_h}:format=auto[bg_wave]")
             prev = "[bg_wave]"
+
+        # Question card dark background (drawbox, instant on/off)
+        if _q_drawbox:
+            fp.append(f"{prev}{_q_drawbox}[bg_qcard]")
+            prev = "[bg_qcard]"
 
         # Subtitles and title drawtext are chained as trailing filters on the last label
         extra = sub_filter.lstrip(",") + title_filter
