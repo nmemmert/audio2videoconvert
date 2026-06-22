@@ -498,17 +498,18 @@ def build_question_drawbox(timed_questions, duration_f, card_x, card_y, card_w, 
 
 
 def build_question_cards_ass(timed_questions, s, duration_f, out_path,
-                              card_x, card_y, card_w, card_h):
+                              card_x, card_y, card_w, card_h,
+                              text_cx=None, text_cy=None):
     """ASS text overlay for discussion question cards.
     The dark background is handled separately by build_question_drawbox().
-    Text is centred in the card area and fades in/out.
+    Text is centred at (text_cx, text_cy) and fades in/out.
     """
     import textwrap as _tw
 
     font = s.get("outline_font", "Georgia")
     width, height = s["width"], s["height"]
-    card_cx = card_x + card_w // 2
-    card_cy = card_y + card_h // 2
+    card_cx = text_cx if text_cx is not None else card_x + card_w // 2
+    card_cy = text_cy if text_cy is not None else card_y + card_h // 2
 
     pad = 60
     text_w_px = card_w - pad * 2
@@ -898,16 +899,19 @@ def render_job(s, audio_path, output_path, art_path=None,
             if q_raw and _saved_segments:
                 timed_q = align_questions_to_transcript(q_raw, _saved_segments)
                 if timed_q:
-                    # Card fills the full right panel (right of sidebar, above waveform)
-                    q_card_x = sidebar_w
-                    q_card_y = 0
-                    q_card_w = width - sidebar_w
-                    q_card_h = height - wave_h
+                    # Dark card = full screen so nothing bleeds through.
+                    # Waveform, captions, and QR are composited after so they remain visible.
+                    # Question text is centred in the right panel area (away from outline).
+                    q_card_x, q_card_y = 0, 0
+                    q_card_w, q_card_h = width, height
+                    # Text centre: middle of right panel (right of outline sidebar)
+                    q_text_cx = sidebar_w + (width - sidebar_w) // 2
+                    q_text_cy = (height - wave_h) // 2
                     question_ass_path = Path(tempfile.gettempdir()) / f"vbvn_q_{os.getpid()}.ass"
                     build_question_cards_ass(timed_q, s, duration_f, question_ass_path,
-                                             q_card_x, q_card_y, q_card_w, q_card_h)
+                                             q_card_x, q_card_y, q_card_w, q_card_h,
+                                             text_cx=q_text_cx, text_cy=q_text_cy)
                     sub_filter += f",subtitles={question_ass_path.as_posix()}"
-                    # Store drawbox info for later insertion into filter graph
                     _q_drawbox = build_question_drawbox(timed_q, duration_f,
                                                         q_card_x, q_card_y, q_card_w, q_card_h)
                     log(f"Discussion questions: {len(timed_q)} cards.")
@@ -979,16 +983,18 @@ def render_job(s, audio_path, output_path, art_path=None,
             fp.append(bg_filter)
             prev = "[bg]"
 
+        # Question card dark background covers the full screen, inserted BEFORE
+        # the waveform so the waveform composites on top of it naturally.
+        # Captions and QR are in later steps so they also show through.
+        if _q_drawbox:
+            fp.append(f"{prev}{_q_drawbox}[bg_qcard]")
+            prev = "[bg_qcard]"
+
         if wave_enabled:
             wc = s.get("waveform_color", "#c9a84c")
             fp.append(f"[{audio_idx}:a]showwaves=s={width}x{wave_h}:mode=cline:colors={wc},format=rgba[wave]")
             fp.append(f"{prev}[wave]overlay=0:{height - wave_h}:format=auto[bg_wave]")
             prev = "[bg_wave]"
-
-        # Question card dark background (drawbox, instant on/off)
-        if _q_drawbox:
-            fp.append(f"{prev}{_q_drawbox}[bg_qcard]")
-            prev = "[bg_qcard]"
 
         # Subtitles and title drawtext are chained as trailing filters on the last label
         extra = sub_filter.lstrip(",") + title_filter
