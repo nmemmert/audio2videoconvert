@@ -445,11 +445,14 @@ def align_questions_to_transcript(questions, segments):
         markers = _ORDINALS[i] if i < len(_ORDINALS) else [str(i + 1)]
         found_t = None
 
-        # Pass 1: look for "question [ordinal]" in spoken text
+        # Pass 1: look for "question number [n]", "question [ordinal]", etc.
+        number_str = str(i + 1)
+        all_markers = markers + [number_str]
         for si in range(search_from_seg, len(segments)):
             seg_lower = segments[si]["text"].lower()
             if "question" in seg_lower:
-                for m in markers:
+                for m in all_markers:
+                    # matches "question number 1", "question 1", "question one", etc.
                     if m in seg_lower:
                         found_t = segments[si]["start"]
                         search_from_seg = si + 1
