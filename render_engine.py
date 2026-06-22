@@ -25,7 +25,7 @@ DEFAULTS = {
     # Art
     "art_enabled": True,
     "art": "podcast-art.jpeg",
-    "art_size": 600,
+    "art_size": 460,
     "art_x_offset": 0,
     # Glow
     "glow_enabled": True,
@@ -236,55 +236,48 @@ def _ass_fmt(t):
     return f"{h:d}:{m:02d}:{sec:05.2f}"
 
 
-def build_sidebar_ass(points, s, duration_f, out_path):
-    """Left-side outline: each point appears at its timestamp, previous ones dim."""
-    import textwrap
+def build_sidebar_ass(points, s, duration_f, out_path, art_x=None):
+    """Left-side outline: one line per point, no word wrap, expands to art edge."""
     color = hex_to_ass(s.get("outline_color", "#ffffff"))
     font = s.get("outline_font", "Georgia")
     size = s.get("outline_font_size", 32)
     wave_h = s.get("waveform_height", 100) if s.get("waveform_enabled") else 0
-    sidebar_w = 340
 
+    # WrapStyle 0 = no wrap in ASS
     header = f"""[Script Info]
 ScriptType: v4.00+
 PlayResX: {s['width']}
 PlayResY: {s['height']}
-WrapStyle: 2
+WrapStyle: 0
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,{font},{size},{color},{color},&H00000000,&H80000000,0,0,0,0,100,100,1,0,1,2,0,7,20,20,20,1
+Style: Default,{font},{size},{color},{color},&H00000000,&H80000000,0,0,0,0,100,100,1,0,1,2,0,7,24,24,24,1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """
-    available_h = s["height"] - wave_h - 20
-    max_chars = max(10, int((sidebar_w - 40) / (size * 0.55)))
-    wrapped_items = []
-    for _, text in points:
-        escaped = text.replace("\\", "\\\\").replace("{", "").replace("}", "")
-        wrapped_items.append(textwrap.wrap(escaped, max_chars) or [""])
-    total_lines = sum(len(w) for w in wrapped_items)
-    line_height = max(size + 4, min(size + 20, available_h // max(total_lines, 1)))
+    available_h = s["height"] - wave_h - 24
+    n = len(points)
+    line_height = max(size + 6, min(size + 28, available_h // max(n, 1)))
 
     lines = [header]
-    y = 20
+    y = 24
     dim_hex = "888888"
-    for i, (start, _) in enumerate(points):
+    for i, (start, text) in enumerate(points):
         if start >= duration_f:
             continue
-        wrapped = wrapped_items[i]
-        ass_text = r"\N".join(wrapped)
-        pos = f"\\pos(20,{y})\\an7"
+        escaped = text.replace("\\", "\\\\").replace("{", "").replace("}", "")
+        pos = f"\\pos(24,{y})\\an7"
         next_start = points[i + 1][0] if i + 1 < len(points) else duration_f
         active_end = min(next_start, duration_f)
         if active_end > start:
             tag = f"{{{pos}\\fad(400,0)}}"
-            lines.append(f"Dialogue: 0,{_ass_fmt(start)},{_ass_fmt(active_end)},Default,,0,0,0,,{tag}{ass_text}")
+            lines.append(f"Dialogue: 0,{_ass_fmt(start)},{_ass_fmt(active_end)},Default,,0,0,0,,{tag}{escaped}")
         if active_end < duration_f:
             tag = f"{{{pos}\\c&H{dim_hex}&}}"
-            lines.append(f"Dialogue: 0,{_ass_fmt(active_end)},{_ass_fmt(duration_f)},Default,,0,0,0,,{tag}{ass_text}")
-        y += line_height * len(wrapped)
+            lines.append(f"Dialogue: 0,{_ass_fmt(active_end)},{_ass_fmt(duration_f)},Default,,0,0,0,,{tag}{escaped}")
+        y += line_height
     out_path.write_text("\n".join(lines))
 
 
@@ -524,25 +517,31 @@ def render_job(s, audio_path, output_path, art_path=None,
     width = s["width"]
     height = s["height"]
     fps = s["fps"]
-    art_size = s.get("art_size", 600)
+    art_size = s.get("art_size", 460)
     wave_enabled = s.get("waveform_enabled", True)
     wave_h = s.get("waveform_height", 100) if wave_enabled else 0
     outline_enabled = s.get("outline_enabled", False)
     outline_style = s.get("outline_style", "sidebar")
-    sidebar_w = 340 if (outline_enabled and outline_style == "sidebar") else 0
 
-    # Vertical: center art in the space above the waveform strip
+    # Sidebar wide enough that typical segment titles fit on one line
+    sidebar_w = 480 if (outline_enabled and outline_style == "sidebar") else 0
+
+    # Vertical: center art in usable space, but leave room above for captions
     usable_h = height - wave_h
-    art_y = max(0, (usable_h - art_size) // 2)
+    caption_reserve = 90  # pixels above art reserved for captions
+    art_y = max(caption_reserve, (usable_h - art_size) // 2)
+    # Ensure art doesn't bleed past the waveform strip
+    if art_y + art_size > usable_h - 10:
+        art_y = max(caption_reserve, usable_h - art_size - 10)
 
     # Horizontal: center art in the space to the right of the sidebar
     art_area_x = sidebar_w
     art_area_w = width - sidebar_w
     art_x = art_area_x + (art_area_w - art_size) // 2 + s.get("art_x_offset", 0)
 
-    # Caption sits between art bottom and waveform top
-    caption_y_px = art_y + art_size + max(8, (wave_h - 60) // 2)
-    caption_y_ass = height - caption_y_px  # ASS MarginV is from bottom
+    # Captions sit above the art (bottom of caption text = top of art - padding)
+    # ASS MarginV for alignment=2 (bottom-center): text bottom = height - MarginV
+    caption_y_ass = height - art_y + 16
 
     glow_color = detect_glow_color(art_path, s.get("glow_color", "#c9a84c")) if art_enabled else s.get("glow_color", "#c9a84c")
 
@@ -635,7 +634,7 @@ def render_job(s, audio_path, output_path, art_path=None,
                 if outline_style == "ticker":
                     build_ticker_ass(points, s, duration_f, outline_ass_path)
                 else:
-                    build_sidebar_ass(points, s, duration_f, outline_ass_path)
+                    build_sidebar_ass(points, s, duration_f, outline_ass_path, art_x=art_x)
                 sub_filter += f",subtitles={outline_ass_path.as_posix()}"
                 log(f"Outline: {len(points)} points ({outline_style}).")
             else:

@@ -136,7 +136,7 @@ class App(tk.Tk):
 
         self.v_art_enabled = tk.BooleanVar(value=d["art_enabled"])
         self.v_art = tk.StringVar(value=d["art"])
-        self.v_art_size = tk.IntVar(value=d["art_size"])
+        self.v_art_size = tk.IntVar(value=d.get("art_size", 460))
         self.v_art_x_offset = tk.IntVar(value=d["art_x_offset"])
 
         self.v_glow_enabled = tk.BooleanVar(value=d["glow_enabled"])
