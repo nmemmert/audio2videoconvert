@@ -785,28 +785,29 @@ def render_job(s, audio_path, output_path, art_path=None,
     outline_enabled = s.get("outline_enabled", False)
     outline_style = s.get("outline_style", "sidebar")
 
-    # Sidebar wide enough that typical segment titles fit on one line
-    sidebar_w = 480 if (outline_enabled and outline_style == "sidebar") else 0
+    # sidebar_w is only finalised after outline points are found.
+    # We track the *requested* value here; art_x is recomputed after outline building.
+    _sidebar_w_req = 480 if (outline_enabled and outline_style == "sidebar") else 0
 
-    # Vertical: center art in usable space, but leave room above for captions
+    # Vertical layout — does not depend on sidebar_w, so compute it now.
     usable_h = height - wave_h
     caption_reserve = 90  # pixels above art reserved for captions
     art_y = max(caption_reserve, (usable_h - art_size) // 2)
-    # Ensure art doesn't bleed past the waveform strip
-    if art_y + art_size > usable_h - 10:
-        art_y = max(caption_reserve, usable_h - art_size - 10)
+    art_y = max(caption_reserve, min(art_y, usable_h - art_size - 10))
+    art_y = max(0, art_y)
 
-    # Horizontal: center art in the space to the right of the sidebar
-    art_area_x = sidebar_w
-    art_area_w = width - sidebar_w
-    art_x = art_area_x + (art_area_w - art_size) // 2 + s.get("art_x_offset", 0)
-    # Clamp so art never bleeds off screen edges
-    art_x = max(0, min(art_x, width - art_size))
-    art_y = max(0, min(art_y, height - art_size))
-
-    # Captions sit above the art (bottom of caption text = top of art - padding)
-    # ASS MarginV for alignment=2 (bottom-center): text bottom = height - MarginV
+    # Caption sits above the art — computed from art_y which is now fixed.
     caption_y_ass = height - art_y + 16
+
+    def _compute_art_x(sw):
+        """Return clamped art_x for a given sidebar width sw."""
+        ax = sw + (width - sw - art_size) // 2 + s.get("art_x_offset", 0)
+        return max(0, min(ax, width - art_size))
+
+    # Preliminary art_x (used for outline text-wrap if points are found).
+    # Will be recomputed after outline building with the true sidebar_w.
+    sidebar_w = _sidebar_w_req
+    art_x = _compute_art_x(sidebar_w)
 
     glow_color = detect_glow_color(art_path, s.get("glow_color", "#c9a84c")) if art_enabled else s.get("glow_color", "#c9a84c")
 
@@ -900,6 +901,11 @@ def render_job(s, audio_path, output_path, art_path=None,
                 log("No discussion questions found in script.")
 
         # ── Outline (gapped at question card timestamps) ─────────────────────
+        if not outline_enabled:
+            # No outline: finalise sidebar_w=0 and art_x now
+            sidebar_w = 0
+            art_x = _compute_art_x(0)
+
         if outline_enabled and _saved_segments:
             progress("Generating outline", 0)
             points = []
@@ -923,6 +929,11 @@ def render_job(s, audio_path, output_path, art_path=None,
                 log("Generating outline via Ollama…")
                 points = generate_outline(_saved_segments, s, log_cb=log)
 
+            # Finalise sidebar_w and art_x based on whether points were found.
+            # If no points, sidebar_w=0 so art is centred on the full screen.
+            sidebar_w = _sidebar_w_req if points else 0
+            art_x = _compute_art_x(sidebar_w)
+
             if points:
                 outline_ass_path = Path(tempfile.gettempdir()) / f"vbvn_out_{os.getpid()}.ass"
                 if outline_style == "ticker":
@@ -936,7 +947,7 @@ def render_job(s, audio_path, output_path, art_path=None,
                 sub_filter += f",subtitles={outline_ass_path.as_posix()}"
                 log(f"Outline: {len(points)} points ({outline_style}).")
             else:
-                log("No outline points — skipping outline overlay.")
+                log("No outline points — art centred, no sidebar reserved.")
 
         # ── Build question card ASS + drawbox ────────────────────────────────
         if timed_q:
