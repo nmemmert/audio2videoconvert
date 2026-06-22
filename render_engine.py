@@ -236,14 +236,30 @@ def _ass_fmt(t):
     return f"{h:d}:{m:02d}:{sec:05.2f}"
 
 
-def build_sidebar_ass(points, s, duration_f, out_path, art_x=None):
-    """Left-side outline: one line per point, no word wrap, expands to art edge."""
+def build_sidebar_ass(points, s, duration_f, out_path, start_y=None, end_y=None, art_x=None):
+    """Left-side outline: one line per point, no word wrap, fills start_y→end_y.
+
+    start_y  — top of the outline region in pixels (below captions)
+    end_y    — bottom of the outline region in pixels (above waveform)
+    Font size is computed dynamically so all items fill the available space.
+    """
     color = hex_to_ass(s.get("outline_color", "#ffffff"))
     font = s.get("outline_font", "Georgia")
-    size = s.get("outline_font_size", 32)
     wave_h = s.get("waveform_height", 100) if s.get("waveform_enabled") else 0
 
-    # WrapStyle 0 = no wrap in ASS
+    height = s["height"]
+    if start_y is None:
+        start_y = 24
+    if end_y is None:
+        end_y = height - wave_h - 12
+
+    n = max(len(points), 1)
+    available_h = end_y - start_y
+    # Dynamic font: fill the space, capped between 20 and 52pt
+    gap = 10  # pixels between items
+    size = max(20, min(52, (available_h - gap * (n - 1)) // n))
+    line_height = (available_h) // n  # evenly distribute full space
+
     header = f"""[Script Info]
 ScriptType: v4.00+
 PlayResX: {s['width']}
@@ -257,17 +273,13 @@ Style: Default,{font},{size},{color},{color},&H00000000,&H80000000,0,0,0,0,100,1
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """
-    available_h = s["height"] - wave_h - 24
-    n = len(points)
-    line_height = max(size + 6, min(size + 28, available_h // max(n, 1)))
-
     lines = [header]
-    y = 24
     dim_hex = "888888"
     for i, (start, text) in enumerate(points):
         if start >= duration_f:
             continue
         escaped = text.replace("\\", "\\\\").replace("{", "").replace("}", "")
+        y = start_y + i * line_height
         pos = f"\\pos(24,{y})\\an7"
         next_start = points[i + 1][0] if i + 1 < len(points) else duration_f
         active_end = min(next_start, duration_f)
@@ -277,7 +289,6 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         if active_end < duration_f:
             tag = f"{{{pos}\\c&H{dim_hex}&}}"
             lines.append(f"Dialogue: 0,{_ass_fmt(active_end)},{_ass_fmt(duration_f)},Default,,0,0,0,,{tag}{escaped}")
-        y += line_height
     out_path.write_text("\n".join(lines))
 
 
@@ -634,7 +645,11 @@ def render_job(s, audio_path, output_path, art_path=None,
                 if outline_style == "ticker":
                     build_ticker_ass(points, s, duration_f, outline_ass_path)
                 else:
-                    build_sidebar_ass(points, s, duration_f, outline_ass_path, art_x=art_x)
+                    # Outline starts below captions, ends above waveform
+                    outline_start_y = art_y + 16   # caption bottom is ~art_y-16; give a small gap
+                    outline_end_y   = height - wave_h - 12
+                    build_sidebar_ass(points, s, duration_f, outline_ass_path,
+                                      start_y=outline_start_y, end_y=outline_end_y, art_x=art_x)
                 sub_filter += f",subtitles={outline_ass_path.as_posix()}"
                 log(f"Outline: {len(points)} points ({outline_style}).")
             else:
