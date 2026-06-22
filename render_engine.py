@@ -276,7 +276,25 @@ def _ass_fmt(t):
     return f"{h:d}:{m:02d}:{sec:05.2f}"
 
 
-def build_sidebar_ass(points, s, duration_f, out_path, start_y=None, end_y=None, art_x=None):
+def _subtract_intervals(start, end, blackouts):
+    """Return sub-intervals of [start, end] that don't overlap any blackout range."""
+    result = []
+    cur = start
+    for bs, be in sorted(blackouts):
+        if be <= cur:
+            continue
+        if bs >= end:
+            break
+        if bs > cur:
+            result.append((cur, bs))
+        cur = max(cur, be)
+    if cur < end:
+        result.append((cur, end))
+    return result
+
+
+def build_sidebar_ass(points, s, duration_f, out_path, start_y=None, end_y=None,
+                      art_x=None, blackout=None):
     """Left-side outline confined to the sidebar column.
 
     Text wraps at the sidebar edge (art_x - padding) so it never overlaps the art.
@@ -285,8 +303,10 @@ def build_sidebar_ass(points, s, duration_f, out_path, start_y=None, end_y=None,
     start_y  — top of the outline region (below captions)
     end_y    — bottom of the outline region (above waveform)
     art_x    — left edge of the art image; text stays left of this
+    blackout — list of (start, end) intervals to suppress the outline (e.g. question cards)
     """
     import textwrap as _textwrap
+    blackout = blackout or []
 
     color = hex_to_ass(s.get("outline_color", "#ffffff"))
     font = s.get("outline_font", "Georgia")
@@ -370,12 +390,14 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             pos = f"\\pos(24,{y})\\an7"
             next_start = points[i + 1][0] if i + 1 < len(points) else duration_f
             active_end = min(next_start, duration_f)
-            if active_end > start:
+            # Active (bright) phase — subtract question card intervals
+            for seg_s, seg_e in _subtract_intervals(start, active_end, blackout):
                 tag = f"{{{pos}\\fad(400,0)}}"
-                lines.append(f"Dialogue: 0,{_ass_fmt(start)},{_ass_fmt(active_end)},Default,,0,0,0,,{tag}{ass_text}")
-            if active_end < duration_f:
+                lines.append(f"Dialogue: 0,{_ass_fmt(seg_s)},{_ass_fmt(seg_e)},Default,,0,0,0,,{tag}{ass_text}")
+            # Dimmed phase — also subtract question card intervals
+            for seg_s, seg_e in _subtract_intervals(active_end, duration_f, blackout):
                 tag = f"{{{pos}\\c&H{dim_hex}&}}"
-                lines.append(f"Dialogue: 0,{_ass_fmt(active_end)},{_ass_fmt(duration_f)},Default,,0,0,0,,{tag}{ass_text}")
+                lines.append(f"Dialogue: 0,{_ass_fmt(seg_s)},{_ass_fmt(seg_e)},Default,,0,0,0,,{tag}{ass_text}")
 
         cursor += slot_h
     out_path.write_text("\n".join(lines))
@@ -847,10 +869,39 @@ def render_job(s, audio_path, output_path, art_path=None,
         else:
             sub_filter = f",subtitles={ass_path.as_posix()}"
 
-        # ── Outline ─────────────────────────────────────────────────────────
-        if outline_enabled and segments_path.exists():
+        # Save segments now so both outline and question cards can use them
+        _saved_segments = []
+        if segments_path.exists():
+            try:
+                _saved_segments = json.loads(segments_path.read_text())
+            except Exception:
+                pass
+        segments_path.unlink(missing_ok=True)
+
+        # ── Align questions FIRST so outline can be gapped at those times ───
+        question_ass_path = None
+        _q_drawbox = ""
+        timed_q = []
+        _q_blackout = []  # (start, end) intervals where question cards are shown
+
+        if s.get("question_cards_enabled") and script_path and _saved_segments:
+            progress("Building question cards", 0)
+            q_raw = extract_discussion_questions(script_path)
+            if q_raw:
+                timed_q = align_questions_to_transcript(q_raw, _saved_segments)
+                if timed_q:
+                    for qi, (qs, _) in enumerate(timed_q):
+                        qnext = timed_q[qi + 1][0] if qi + 1 < len(timed_q) else duration_f
+                        _q_blackout.append((qs, min(qnext, qs + 55, duration_f)))
+                    log(f"Discussion questions: {len(timed_q)} cards aligned.")
+                else:
+                    log("Could not align discussion questions to transcript.")
+            else:
+                log("No discussion questions found in script.")
+
+        # ── Outline (gapped at question card timestamps) ─────────────────────
+        if outline_enabled and _saved_segments:
             progress("Generating outline", 0)
-            segments_data = json.loads(segments_path.read_text())
             points = []
 
             if script_path:
@@ -865,68 +916,42 @@ def render_job(s, audio_path, output_path, art_path=None,
                             for i, (t, a) in enumerate(script_points)
                         ]
                 if script_points:
-                    points = align_outline_to_transcript(script_points, segments_data)
+                    points = align_outline_to_transcript(script_points, _saved_segments)
                     log(f"Outline from script: {len(points)} sections aligned.")
 
             if not points:
                 log("Generating outline via Ollama…")
-                points = generate_outline(segments_data, s, log_cb=log)
+                points = generate_outline(_saved_segments, s, log_cb=log)
 
             if points:
                 outline_ass_path = Path(tempfile.gettempdir()) / f"vbvn_out_{os.getpid()}.ass"
                 if outline_style == "ticker":
                     build_ticker_ass(points, s, duration_f, outline_ass_path)
                 else:
-                    # Outline starts below captions, ends above waveform
-                    outline_start_y = art_y + 16   # caption bottom is ~art_y-16; give a small gap
+                    outline_start_y = art_y + 16
                     outline_end_y   = height - wave_h - 12
                     build_sidebar_ass(points, s, duration_f, outline_ass_path,
-                                      start_y=outline_start_y, end_y=outline_end_y, art_x=art_x)
+                                      start_y=outline_start_y, end_y=outline_end_y,
+                                      art_x=art_x, blackout=_q_blackout)
                 sub_filter += f",subtitles={outline_ass_path.as_posix()}"
                 log(f"Outline: {len(points)} points ({outline_style}).")
             else:
                 log("No outline points — skipping outline overlay.")
 
-        # Save segments before unlinking so question cards can use them
-        _saved_segments = []
-        if segments_path.exists():
-            try:
-                _saved_segments = json.loads(segments_path.read_text())
-            except Exception:
-                pass
-        segments_path.unlink(missing_ok=True)
-
-        # ── Discussion question cards ────────────────────────────────────────
-        question_ass_path = None
-        _q_drawbox = ""
-        if s.get("question_cards_enabled") and script_path:
-            progress("Building question cards", 0)
-            q_raw = extract_discussion_questions(script_path)
-            if q_raw and _saved_segments:
-                timed_q = align_questions_to_transcript(q_raw, _saved_segments)
-                if timed_q:
-                    # Dark card = full screen so nothing bleeds through.
-                    # Waveform, captions, and QR are composited after so they remain visible.
-                    # Question text is centred in the right panel area (away from outline).
-                    q_card_x, q_card_y = 0, 0
-                    q_card_w, q_card_h = width, height
-                    # Text centre: middle of right panel (right of outline sidebar)
-                    q_text_cx = sidebar_w + (width - sidebar_w) // 2
-                    q_text_cy = (height - wave_h) // 2
-                    question_ass_path = Path(tempfile.gettempdir()) / f"vbvn_q_{os.getpid()}.ass"
-                    build_question_cards_ass(timed_q, s, duration_f, question_ass_path,
-                                             q_card_x, q_card_y, q_card_w, q_card_h,
-                                             text_cx=q_text_cx, text_cy=q_text_cy)
-                    sub_filter += f",subtitles={question_ass_path.as_posix()}"
-                    _q_drawbox = build_question_drawbox(timed_q, duration_f,
-                                                        q_card_x, q_card_y, q_card_w, q_card_h)
-                    log(f"Discussion questions: {len(timed_q)} cards.")
-                else:
-                    log("Could not align discussion questions to transcript.")
-            elif not q_raw:
-                log("No discussion questions found in script.")
-            else:
-                log("No transcript segments — skipping question cards.")
+        # ── Build question card ASS + drawbox ────────────────────────────────
+        if timed_q:
+            q_card_x, q_card_y = 0, 0
+            q_card_w, q_card_h = width, height
+            # Centre text on full screen (not just right panel — outline is hidden)
+            q_text_cx = width // 2
+            q_text_cy = (height - wave_h) // 2
+            question_ass_path = Path(tempfile.gettempdir()) / f"vbvn_q_{os.getpid()}.ass"
+            build_question_cards_ass(timed_q, s, duration_f, question_ass_path,
+                                     q_card_x, q_card_y, q_card_w, q_card_h,
+                                     text_cx=q_text_cx, text_cy=q_text_cy)
+            sub_filter += f",subtitles={question_ass_path.as_posix()}"
+            _q_drawbox = build_question_drawbox(timed_q, duration_f,
+                                                q_card_x, q_card_y, q_card_w, q_card_h)
 
         # ── Title overlay ───────────────────────────────────────────────────
         title_filter = ""
