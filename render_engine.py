@@ -288,12 +288,16 @@ def build_sidebar_ass(points, s, duration_f, out_path, start_y=None, end_y=None,
         wrapped_items_final = _wrap_all(size)
         total_lines_final = sum(len(w) for w in wrapped_items_final)
 
-    # Distribute total vertical space evenly across items (not individual lines)
-    n_items = len(points)
-    item_slot = available_h // max(n_items, 1)  # pixels per item slot
-    line_h = size + 10  # pixels per wrapped line within a slot
-    # Each item uses 78% of its slot height; the rest is whitespace above/below
-    slot_inner = int(item_slot * 0.78)
+    # Distribute space proportionally: each item's slot = its line count / total lines.
+    # A 2-line item gets exactly twice the vertical space of a 1-line item,
+    # so spacing between items is always consistent regardless of wrapping.
+    line_h = size + 10  # pixels per text line
+    line_counts = [len(w) for w in wrapped_items_final]
+    total_lines_used = sum(line_counts)
+    # px per "line unit" — each item slot = line_count * px_per_unit
+    px_per_unit = available_h / max(total_lines_used, 1)
+    # Inner fraction of each slot used for text; the rest is whitespace
+    FILL = 0.72  # 72% text, 28% breathing room
 
     header = f"""[Script Info]
 ScriptType: v4.00+
@@ -310,26 +314,30 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """
     lines = [header]
     dim_hex = "888888"
+    cursor = start_y  # running y position as we place items
     for i, (start, _) in enumerate(points):
-        if start >= duration_f:
-            continue
         wrapped = wrapped_items_final[i]
         ass_text = r"\N".join(wrapped)
-        # Centre the item's lines vertically within its slot
-        slot_top = start_y + i * item_slot
-        text_block_h = len(wrapped) * line_h
-        # Centre the text block within the inner 78% of the slot
-        slot_margin = (item_slot - slot_inner) // 2
-        y = slot_top + slot_margin + (slot_inner - text_block_h) // 2
-        pos = f"\\pos(24,{y})\\an7"
-        next_start = points[i + 1][0] if i + 1 < len(points) else duration_f
-        active_end = min(next_start, duration_f)
-        if active_end > start:
-            tag = f"{{{pos}\\fad(400,0)}}"
-            lines.append(f"Dialogue: 0,{_ass_fmt(start)},{_ass_fmt(active_end)},Default,,0,0,0,,{tag}{ass_text}")
-        if active_end < duration_f:
-            tag = f"{{{pos}\\c&H{dim_hex}&}}"
-            lines.append(f"Dialogue: 0,{_ass_fmt(active_end)},{_ass_fmt(duration_f)},Default,,0,0,0,,{tag}{ass_text}")
+        n_lines = line_counts[i]
+        slot_h = px_per_unit * n_lines          # proportional slot height
+        margin = slot_h * (1 - FILL) / 2        # equal top/bottom padding
+        text_block_h = n_lines * line_h
+        # Centre text block inside the inner FILL portion of the slot
+        inner_h = slot_h * FILL
+        y = int(cursor + margin + (inner_h - text_block_h) / 2)
+
+        if start < duration_f:
+            pos = f"\\pos(24,{y})\\an7"
+            next_start = points[i + 1][0] if i + 1 < len(points) else duration_f
+            active_end = min(next_start, duration_f)
+            if active_end > start:
+                tag = f"{{{pos}\\fad(400,0)}}"
+                lines.append(f"Dialogue: 0,{_ass_fmt(start)},{_ass_fmt(active_end)},Default,,0,0,0,,{tag}{ass_text}")
+            if active_end < duration_f:
+                tag = f"{{{pos}\\c&H{dim_hex}&}}"
+                lines.append(f"Dialogue: 0,{_ass_fmt(active_end)},{_ass_fmt(duration_f)},Default,,0,0,0,,{tag}{ass_text}")
+
+        cursor += slot_h
     out_path.write_text("\n".join(lines))
 
 
