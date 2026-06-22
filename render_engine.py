@@ -413,13 +413,73 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     out_path.write_text("\n".join(lines))
 
 
+def align_questions_to_transcript(questions, segments):
+    """Find when each discussion question is introduced in the audio.
+
+    Strategy (tried in order for each question):
+    1. Search transcript for 'question' + ordinal/number near that position
+       (e.g. host says "question one", "question 1", "first question")
+    2. Fallback: search for first 3 words of the question text verbatim
+
+    Each question is searched only after the previous one was found, so
+    ordering is always preserved.
+    """
+    if not questions or not segments:
+        return []
+
+    _ORDINALS = [
+        ["first", "one", "1"],
+        ["second", "two", "2"],
+        ["third", "three", "3"],
+        ["fourth", "four", "4"],
+        ["fifth", "five", "5"],
+        ["sixth", "six", "6"],
+        ["seventh", "seven", "7"],
+        ["eighth", "eight", "8"],
+    ]
+
+    result = []
+    search_from_seg = 0  # don't re-scan segments before last found question
+
+    for i, (q_text, _) in enumerate(questions):
+        markers = _ORDINALS[i] if i < len(_ORDINALS) else [str(i + 1)]
+        found_t = None
+
+        # Pass 1: look for "question [ordinal]" in spoken text
+        for si in range(search_from_seg, len(segments)):
+            seg_lower = segments[si]["text"].lower()
+            if "question" in seg_lower:
+                for m in markers:
+                    if m in seg_lower:
+                        found_t = segments[si]["start"]
+                        search_from_seg = si + 1
+                        break
+            if found_t is not None:
+                break
+
+        # Pass 2: match first 3 words of question text verbatim
+        if found_t is None:
+            q_words = _normalize(q_text).split()
+            needle = " ".join(q_words[:3]) if len(q_words) >= 3 else _normalize(q_text)
+            for si in range(search_from_seg, len(segments)):
+                if needle in _normalize(segments[si]["text"]):
+                    found_t = segments[si]["start"]
+                    search_from_seg = si + 1
+                    break
+
+        if found_t is not None:
+            result.append((found_t, q_text))
+
+    return result
+
+
 def build_question_cards_ass(timed_questions, s, duration_f, out_path, art_x, art_y, art_size):
-    """Overlay a dark card on the art area showing each discussion question.
+    """Overlay a fully-opaque dark card on the art area for each discussion question.
 
     Two ASS layers per question:
-      Layer 0 — filled dark rectangle drawn over the art area (hides art)
-      Layer 1 — question text centred inside that rectangle
-    Both fade in/out together.
+      Layer 0 — solid black rectangle drawn over the entire art area
+      Layer 1 — question text centred inside it
+    Both fade in/out with \fad so the art smoothly hides then reappears.
     """
     import textwrap as _tw
 
@@ -428,7 +488,6 @@ def build_question_cards_ass(timed_questions, s, duration_f, out_path, art_x, ar
     art_cx = art_x + art_size // 2
     art_cy = art_y + art_size // 2
 
-    # Text wraps within art area minus padding
     pad = 40
     text_w_px = art_size - pad * 2
     font_size = max(22, min(42, art_size // 10))
@@ -442,7 +501,7 @@ WrapStyle: 0
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Box,{font},1,&H00000000,&H00000000,&H00000000,&HE0000000,0,0,0,0,100,100,0,0,3,0,0,7,0,0,0,1
+Style: Box,Arial,1,&H00000000,&H00000000,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,0,0,7,0,0,0,1
 Style: Text,{font},{font_size},&H00FFFFFF,&H00FFFFFF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,1,0,5,0,0,0,1
 
 [Events]
@@ -453,26 +512,26 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     for i, (start, text) in enumerate(timed_questions):
         if start >= duration_f:
             continue
-        # Card stays up until next question or max 60 s, whichever is sooner
         next_start = timed_questions[i + 1][0] if i + 1 < len(timed_questions) else duration_f
-        end = min(next_start, start + 60, duration_f)
+        end = min(next_start, start + 55, duration_f)
         if end <= start:
             continue
 
         s_fmt, e_fmt = _ass_fmt(start), _ass_fmt(end)
-        fade = "{\\fad(600,600)}"
 
-        # Layer 0: dark filled rectangle covering the art area
-        # ASS vector drawing: {\an7\pos(x,y)\p1}m 0 0 l w 0 l w h l 0 h{\p0}
-        box_tag = f"{{\\an7\\pos({art_x},{art_y})\\p1\\c&H000000&\\1a&H88&}}{fade}"
+        # Layer 0: solid black rectangle over the art area.
+        # \1a&H00& = primary alpha fully opaque. All tags BEFORE \p1.
+        box_tag = (f"{{\\an7\\pos({art_x},{art_y})"
+                   f"\\c&H000000&\\1a&H00&\\2a&HFF&\\3a&HFF&\\4a&HFF&"
+                   f"\\fad(600,600)\\p1}}")
         box_draw = f"m 0 0 l {art_size} 0 l {art_size} {art_size} l 0 {art_size}"
         lines.append(f"Dialogue: 0,{s_fmt},{e_fmt},Box,,0,0,0,,{box_tag}{box_draw}{{\\p0}}")
 
-        # Layer 1: question text centred in art area
+        # Layer 1: question text centred over the dark card
         escaped = text.replace("\\", "\\\\").replace("{", "").replace("}", "")
         wrapped = _tw.wrap(escaped, chars_per_line) or [escaped]
         ass_text = r"\N".join(wrapped)
-        text_tag = f"{{\\an5\\pos({art_cx},{art_cy})}}{fade}"
+        text_tag = f"{{\\an5\\pos({art_cx},{art_cy})\\fad(600,600)}}"
         lines.append(f"Dialogue: 1,{s_fmt},{e_fmt},Text,,0,0,0,,{text_tag}{ass_text}")
 
     out_path.write_text("\n".join(lines))
@@ -824,7 +883,7 @@ def render_job(s, audio_path, output_path, art_path=None,
             progress("Building question cards", 0)
             q_raw = extract_discussion_questions(script_path)
             if q_raw and _saved_segments:
-                timed_q = align_outline_to_transcript(q_raw, _saved_segments)
+                timed_q = align_questions_to_transcript(q_raw, _saved_segments)
                 if timed_q:
                     question_ass_path = Path(tempfile.gettempdir()) / f"vbvn_q_{os.getpid()}.ass"
                     build_question_cards_ass(timed_q, s, duration_f, question_ass_path,
