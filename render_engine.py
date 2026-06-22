@@ -291,7 +291,9 @@ def build_sidebar_ass(points, s, duration_f, out_path, start_y=None, end_y=None,
     # Distribute total vertical space evenly across items (not individual lines)
     n_items = len(points)
     item_slot = available_h // max(n_items, 1)  # pixels per item slot
-    line_h = size + 8  # pixels per wrapped line within a slot
+    line_h = size + 10  # pixels per wrapped line within a slot
+    # Each item uses 78% of its slot height; the rest is whitespace above/below
+    slot_inner = int(item_slot * 0.78)
 
     header = f"""[Script Info]
 ScriptType: v4.00+
@@ -316,7 +318,9 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         # Centre the item's lines vertically within its slot
         slot_top = start_y + i * item_slot
         text_block_h = len(wrapped) * line_h
-        y = slot_top + (item_slot - text_block_h) // 2
+        # Centre the text block within the inner 78% of the slot
+        slot_margin = (item_slot - slot_inner) // 2
+        y = slot_top + slot_margin + (slot_inner - text_block_h) // 2
         pos = f"\\pos(24,{y})\\an7"
         next_start = points[i + 1][0] if i + 1 < len(points) else duration_f
         active_end = min(next_start, duration_f)
@@ -702,7 +706,7 @@ def render_job(s, audio_path, output_path, art_path=None,
             title_filter = (
                 f",drawtext=text={escaped}:font='{fn}':"
                 f"fontsize={s.get('title_font_size', 48)}:fontcolor={s.get('title_color', 'white')}:"
-                f"x=(w-text_w)/2:y=30:box=1:boxcolor=black@0.4:boxborderw=10"
+                f"x=(w-text_w)/2:y=72:box=1:boxcolor=black@0.4:boxborderw=10"
             )
 
         # ── Build ffmpeg filter_complex ──────────────────────────────────────
