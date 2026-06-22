@@ -63,6 +63,13 @@ DEFAULTS = {
     "height": 1080,
     "fps": 30,
     "output_dir": "",
+    # Discussion question cards
+    "question_cards_enabled": False,
+    # QR code / watermark
+    "qr_enabled": False,
+    "qr_path": "",
+    "qr_size": 160,
+    "qr_corner": "bottom-right",  # bottom-right, bottom-left, top-right, top-left
     # Ollama (outline generation fallback)
     "ollama_url": "http://localhost:11434",
     "ollama_model": "llama3.1",
@@ -124,6 +131,39 @@ def _normalize(text):
     text = text.lower()
     text = re.sub(r"[^a-z0-9 ]+", " ", text)
     return re.sub(r"\s+", " ", text).strip()
+
+
+def extract_discussion_questions(docx_path):
+    """Find discussion questions in a docx script.
+    Returns list of (question_text, anchor_text) suitable for timestamp alignment."""
+    if Document is None:
+        return []
+    doc = Document(str(docx_path))
+    paragraphs = [p.text.strip() for p in doc.paragraphs]
+
+    questions = []
+    in_discussion = False
+
+    for text in paragraphs:
+        if not text:
+            continue
+        upper = text.upper()
+        # Enter a discussion/question block
+        if "DISCUSSION" in upper or "SMALL GROUP" in upper or "STUDY QUESTION" in upper:
+            in_discussion = True
+            continue
+        # Exit on a new all-caps section header that isn't a question
+        if in_discussion and _HEADER_RE.match(text) and "DISCUSSION" not in upper and "QUESTION" not in upper:
+            if text == text.upper() or text.startswith("SEGMENT") or text.startswith("CLOSING"):
+                in_discussion = False
+                continue
+        if in_discussion:
+            # Strip leading "1." / "2)" / "Q1." numbering
+            clean = re.sub(r"^[Q\d]+[\.\)]\s*", "", text).strip()
+            if clean and (clean.endswith("?") or re.match(r"^[Q\d]+[\.\)]", text)):
+                questions.append((clean, clean))
+
+    return questions
 
 
 def extract_outline_from_script(docx_path):
@@ -370,6 +410,71 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         escaped = text.replace("\\", "\\\\").replace("{", "").replace("}", "")
         tag = "{\\fad(300,300)}"
         lines.append(f"Dialogue: 0,{_ass_fmt(start)},{_ass_fmt(end)},Default,,0,0,0,,{tag}{escaped}")
+    out_path.write_text("\n".join(lines))
+
+
+def build_question_cards_ass(timed_questions, s, duration_f, out_path, art_x, art_y, art_size):
+    """Overlay a dark card on the art area showing each discussion question.
+
+    Two ASS layers per question:
+      Layer 0 — filled dark rectangle drawn over the art area (hides art)
+      Layer 1 — question text centred inside that rectangle
+    Both fade in/out together.
+    """
+    import textwrap as _tw
+
+    font = s.get("outline_font", "Georgia")
+    width, height = s["width"], s["height"]
+    art_cx = art_x + art_size // 2
+    art_cy = art_y + art_size // 2
+
+    # Text wraps within art area minus padding
+    pad = 40
+    text_w_px = art_size - pad * 2
+    font_size = max(22, min(42, art_size // 10))
+    chars_per_line = max(10, int(text_w_px / (font_size * 0.56)))
+
+    header = f"""[Script Info]
+ScriptType: v4.00+
+PlayResX: {width}
+PlayResY: {height}
+WrapStyle: 0
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Box,{font},1,&H00000000,&H00000000,&H00000000,&HE0000000,0,0,0,0,100,100,0,0,3,0,0,7,0,0,0,1
+Style: Text,{font},{font_size},&H00FFFFFF,&H00FFFFFF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,1,0,5,0,0,0,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+"""
+    lines = [header]
+
+    for i, (start, text) in enumerate(timed_questions):
+        if start >= duration_f:
+            continue
+        # Card stays up until next question or max 60 s, whichever is sooner
+        next_start = timed_questions[i + 1][0] if i + 1 < len(timed_questions) else duration_f
+        end = min(next_start, start + 60, duration_f)
+        if end <= start:
+            continue
+
+        s_fmt, e_fmt = _ass_fmt(start), _ass_fmt(end)
+        fade = "{\\fad(600,600)}"
+
+        # Layer 0: dark filled rectangle covering the art area
+        # ASS vector drawing: {\an7\pos(x,y)\p1}m 0 0 l w 0 l w h l 0 h{\p0}
+        box_tag = f"{{\\an7\\pos({art_x},{art_y})\\p1\\c&H000000&\\1a&H88&}}{fade}"
+        box_draw = f"m 0 0 l {art_size} 0 l {art_size} {art_size} l 0 {art_size}"
+        lines.append(f"Dialogue: 0,{s_fmt},{e_fmt},Box,,0,0,0,,{box_tag}{box_draw}{{\\p0}}")
+
+        # Layer 1: question text centred in art area
+        escaped = text.replace("\\", "\\\\").replace("{", "").replace("}", "")
+        wrapped = _tw.wrap(escaped, chars_per_line) or [escaped]
+        ass_text = r"\N".join(wrapped)
+        text_tag = f"{{\\an5\\pos({art_cx},{art_cy})}}{fade}"
+        lines.append(f"Dialogue: 1,{s_fmt},{e_fmt},Text,,0,0,0,,{text_tag}{ass_text}")
+
     out_path.write_text("\n".join(lines))
 
 
@@ -704,7 +809,34 @@ def render_job(s, audio_path, output_path, art_path=None,
             else:
                 log("No outline points — skipping outline overlay.")
 
+        # Save segments before unlinking so question cards can use them
+        _saved_segments = []
+        if segments_path.exists():
+            try:
+                _saved_segments = json.loads(segments_path.read_text())
+            except Exception:
+                pass
         segments_path.unlink(missing_ok=True)
+
+        # ── Discussion question cards ────────────────────────────────────────
+        question_ass_path = None
+        if s.get("question_cards_enabled") and script_path:
+            progress("Building question cards", 0)
+            q_raw = extract_discussion_questions(script_path)
+            if q_raw and _saved_segments:
+                timed_q = align_outline_to_transcript(q_raw, _saved_segments)
+                if timed_q:
+                    question_ass_path = Path(tempfile.gettempdir()) / f"vbvn_q_{os.getpid()}.ass"
+                    build_question_cards_ass(timed_q, s, duration_f, question_ass_path,
+                                             art_x, art_y, art_size)
+                    sub_filter += f",subtitles={question_ass_path.as_posix()}"
+                    log(f"Discussion questions: {len(timed_q)} cards.")
+                else:
+                    log("Could not align discussion questions to transcript.")
+            elif not q_raw:
+                log("No discussion questions found in script.")
+            else:
+                log("No transcript segments — skipping question cards.")
 
         # ── Title overlay ───────────────────────────────────────────────────
         title_filter = ""
@@ -736,6 +868,13 @@ def render_job(s, audio_path, output_path, art_path=None,
             audio_stream = "1:a"
 
         inputs += ["-i", str(tmp_audio)]
+
+        # QR code image input (optional)
+        qr_enabled = s.get("qr_enabled") and s.get("qr_path") and Path(s["qr_path"]).exists()
+        qr_idx = None
+        if qr_enabled:
+            qr_idx = 2 if art_enabled else 1
+            inputs += ["-loop", "1", "-framerate", str(fps), "-i", str(s["qr_path"])]
 
         # Build filter graph
         # art input index is 0 if art_enabled, otherwise n/a
@@ -769,7 +908,27 @@ def render_job(s, audio_path, output_path, art_path=None,
         # Subtitles and title drawtext are chained as trailing filters on the last label
         extra = sub_filter.lstrip(",") + title_filter
         if extra:
-            fp.append(f"{prev}{extra}[out]")
+            fp.append(f"{prev}{extra}[pre_qr]")
+            prev = "[pre_qr]"
+        # else prev stays as-is
+
+        # QR code overlay in chosen corner, above the waveform strip
+        if qr_enabled and qr_idx is not None:
+            qr_size = s.get("qr_size", 160)
+            qr_margin = 20
+            corner = s.get("qr_corner", "bottom-right")
+            qr_bottom = height - wave_h - qr_margin
+            qr_y = qr_bottom - qr_size
+            if "right" in corner:
+                qr_x = width - qr_size - qr_margin
+            else:
+                qr_x = qr_margin
+            if "top" in corner:
+                qr_y = qr_margin
+            fp.append(f"[{qr_idx}:v]scale={qr_size}:{qr_size}[qr_scaled]")
+            fp.append(f"{prev}[qr_scaled]overlay={qr_x}:{qr_y}:format=auto[out]")
+        elif extra:
+            fp.append(f"[pre_qr]null[out]")
         else:
             fp.append(f"{prev}null[out]")
 
@@ -809,5 +968,7 @@ def render_job(s, audio_path, output_path, art_path=None,
             ass_path.unlink(missing_ok=True)
         if outline_ass_path is not None:
             outline_ass_path.unlink(missing_ok=True)
+        if question_ass_path is not None:
+            question_ass_path.unlink(missing_ok=True)
         if preview_audio is not None:
             preview_audio.unlink(missing_ok=True)

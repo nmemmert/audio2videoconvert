@@ -159,6 +159,13 @@ class App(tk.Tk):
         self.v_outline_style = tk.StringVar(value=d["outline_style"])
         self.v_script = tk.StringVar()
 
+        self.v_question_cards = tk.BooleanVar(value=d["question_cards_enabled"])
+
+        self.v_qr_enabled = tk.BooleanVar(value=d["qr_enabled"])
+        self.v_qr_path = tk.StringVar(value=d["qr_path"])
+        self.v_qr_size = tk.IntVar(value=d["qr_size"])
+        self.v_qr_corner = tk.StringVar(value=d["qr_corner"])
+
         self.v_title_enabled = tk.BooleanVar(value=d["title_enabled"])
         self.v_width = tk.IntVar(value=d["width"])
         self.v_height = tk.IntVar(value=d["height"])
@@ -328,6 +335,37 @@ class App(tk.Tk):
         _lbl(self._outline_list_frame, "Load a script above to pick outline items.",
              small=True, bg=BG2).pack(anchor="w")
 
+        # ── Discussion Questions ──────────────────────────────────────────────
+        _section(p, "Discussion Questions")
+        dq = _card(p)
+        dq.pack(fill="x", padx=28, pady=(0, 14))
+
+        _check(dq, "Show discussion question cards (fades over art when each question is spoken)",
+               self.v_question_cards).pack(anchor="w", pady=(0, 6))
+        _lbl(dq, "Requires a script — questions are detected from the docx automatically.",
+             small=True, bg=BG2).pack(anchor="w")
+
+        # ── QR Code ──────────────────────────────────────────────────────────
+        _section(p, "QR Code Watermark")
+        qr = _card(p)
+        qr.pack(fill="x", padx=28, pady=(0, 14))
+
+        _check(qr, "Show QR code in corner", self.v_qr_enabled).pack(anchor="w", pady=(0, 10))
+
+        r_qr1 = tk.Frame(qr, bg=BG2)
+        r_qr1.pack(fill="x", pady=(0, 8))
+        _lbl(r_qr1, "Image:", small=True, bg=BG2).pack(side="left")
+        _entry(r_qr1, self.v_qr_path, width=24).pack(side="left", padx=8)
+        _btn(r_qr1, "Browse…", self._pick_qr, small=True).pack(side="left")
+
+        r_qr2 = tk.Frame(qr, bg=BG2)
+        r_qr2.pack(fill="x")
+        _lbl(r_qr2, "Size:", small=True, bg=BG2).pack(side="left")
+        _spin(r_qr2, 80, 400, self.v_qr_size, 4).pack(side="left", padx=6)
+        _lbl(r_qr2, "px   Corner:", small=True, bg=BG2).pack(side="left", padx=(10, 0))
+        _combo(r_qr2, ["bottom-right", "bottom-left", "top-right", "top-left"],
+               textvariable=self.v_qr_corner, width=14).pack(side="left", padx=8)
+
         # ── Captions ─────────────────────────────────────────────────────────
         _section(p, "Captions")
         cc = _card(p)
@@ -460,6 +498,13 @@ class App(tk.Tk):
 
         self._append_log(f"Script loaded: {len(points)} outline items found — uncheck any you don't want.", "accent")
 
+    def _pick_qr(self):
+        f = filedialog.askopenfilename(
+            title="Select QR code image",
+            filetypes=[("Images", "*.jpg *.jpeg *.png"), ("All", "*.*")])
+        if f:
+            self.v_qr_path.set(f)
+
     def _upload_art(self):
         f = filedialog.askopenfilename(
             title="Select art image",
@@ -507,6 +552,11 @@ class App(tk.Tk):
             "width": self.v_width.get(),
             "height": self.v_height.get(),
             "fps": self.v_fps.get(),
+            "question_cards_enabled": self.v_question_cards.get(),
+            "qr_enabled": self.v_qr_enabled.get(),
+            "qr_path": self.v_qr_path.get(),
+            "qr_size": self.v_qr_size.get(),
+            "qr_corner": self.v_qr_corner.get(),
             "ollama_url": eng.DEFAULTS["ollama_url"],
             "ollama_model": eng.DEFAULTS["ollama_model"],
         }
@@ -531,6 +581,11 @@ class App(tk.Tk):
             (self.v_font_size, "font_size"),
             (self.v_outline_enabled, "outline_enabled"),
             (self.v_outline_style, "outline_style"),
+            (self.v_question_cards, "question_cards_enabled"),
+            (self.v_qr_enabled, "qr_enabled"),
+            (self.v_qr_path, "qr_path"),
+            (self.v_qr_size, "qr_size"),
+            (self.v_qr_corner, "qr_corner"),
             (self.v_width, "width"),
             (self.v_height, "height"),
             (self.v_fps, "fps"),
