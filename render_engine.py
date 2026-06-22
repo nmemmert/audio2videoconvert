@@ -237,28 +237,61 @@ def _ass_fmt(t):
 
 
 def build_sidebar_ass(points, s, duration_f, out_path, start_y=None, end_y=None, art_x=None):
-    """Left-side outline: one line per point, no word wrap, fills start_y→end_y.
+    """Left-side outline confined to the sidebar column.
 
-    start_y  — top of the outline region in pixels (below captions)
-    end_y    — bottom of the outline region in pixels (above waveform)
-    Font size is computed dynamically so all items fill the available space.
+    Text wraps at the sidebar edge (art_x - padding) so it never overlaps the art.
+    Font size is chosen dynamically so all wrapped lines fill start_y → end_y.
+
+    start_y  — top of the outline region (below captions)
+    end_y    — bottom of the outline region (above waveform)
+    art_x    — left edge of the art image; text stays left of this
     """
+    import textwrap as _textwrap
+
     color = hex_to_ass(s.get("outline_color", "#ffffff"))
     font = s.get("outline_font", "Georgia")
     wave_h = s.get("waveform_height", 100) if s.get("waveform_enabled") else 0
-
     height = s["height"]
+
     if start_y is None:
         start_y = 24
     if end_y is None:
         end_y = height - wave_h - 12
+    if art_x is None:
+        art_x = s["width"] // 2
 
-    n = max(len(points), 1)
-    available_h = end_y - start_y
-    # Dynamic font: fill the space, capped between 20 and 52pt
-    gap = 10  # pixels between items
-    size = max(20, min(52, (available_h - gap * (n - 1)) // n))
-    line_height = (available_h) // n  # evenly distribute full space
+    available_h = max(1, end_y - start_y)
+    # Usable pixel width for text: from x=24 to art_x - 24 (padding each side)
+    text_px_w = max(80, art_x - 48)
+
+    # Find the largest font size (between 18 and 54) where all wrapped lines fit
+    # Character width approximation: size * 0.58 pixels per char (proportional font)
+    def _wrap_all(size):
+        chars = max(4, int(text_px_w / (size * 0.58)))
+        wrapped = []
+        for _, text in points:
+            escaped = text.replace("\\", "\\\\").replace("{", "").replace("}", "")
+            wrapped.append(_textwrap.wrap(escaped, chars) or [escaped])
+        return wrapped
+
+    size = 18
+    for candidate in range(54, 17, -1):
+        wrapped_items = _wrap_all(candidate)
+        total_lines = sum(len(w) for w in wrapped_items)
+        line_px = candidate + 8  # font size + inter-line gap
+        if total_lines * line_px <= available_h:
+            size = candidate
+            wrapped_items_final = wrapped_items
+            total_lines_final = total_lines
+            break
+    else:
+        wrapped_items_final = _wrap_all(size)
+        total_lines_final = sum(len(w) for w in wrapped_items_final)
+
+    # Distribute total vertical space evenly across items (not individual lines)
+    n_items = len(points)
+    item_slot = available_h // max(n_items, 1)  # pixels per item slot
+    line_h = size + 8  # pixels per wrapped line within a slot
 
     header = f"""[Script Info]
 ScriptType: v4.00+
@@ -275,20 +308,24 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """
     lines = [header]
     dim_hex = "888888"
-    for i, (start, text) in enumerate(points):
+    for i, (start, _) in enumerate(points):
         if start >= duration_f:
             continue
-        escaped = text.replace("\\", "\\\\").replace("{", "").replace("}", "")
-        y = start_y + i * line_height
+        wrapped = wrapped_items_final[i]
+        ass_text = r"\N".join(wrapped)
+        # Centre the item's lines vertically within its slot
+        slot_top = start_y + i * item_slot
+        text_block_h = len(wrapped) * line_h
+        y = slot_top + (item_slot - text_block_h) // 2
         pos = f"\\pos(24,{y})\\an7"
         next_start = points[i + 1][0] if i + 1 < len(points) else duration_f
         active_end = min(next_start, duration_f)
         if active_end > start:
             tag = f"{{{pos}\\fad(400,0)}}"
-            lines.append(f"Dialogue: 0,{_ass_fmt(start)},{_ass_fmt(active_end)},Default,,0,0,0,,{tag}{escaped}")
+            lines.append(f"Dialogue: 0,{_ass_fmt(start)},{_ass_fmt(active_end)},Default,,0,0,0,,{tag}{ass_text}")
         if active_end < duration_f:
             tag = f"{{{pos}\\c&H{dim_hex}&}}"
-            lines.append(f"Dialogue: 0,{_ass_fmt(active_end)},{_ass_fmt(duration_f)},Default,,0,0,0,,{tag}{escaped}")
+            lines.append(f"Dialogue: 0,{_ass_fmt(active_end)},{_ass_fmt(duration_f)},Default,,0,0,0,,{tag}{ass_text}")
     out_path.write_text("\n".join(lines))
 
 
