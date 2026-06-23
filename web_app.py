@@ -6,16 +6,15 @@ Then open http://<server-ip>:8000 in a browser.
 """
 
 import json
-import queue
 import shutil
 import tempfile
 import threading
 import time
 import uuid
+import queue
 from pathlib import Path
 from werkzeug.utils import secure_filename
-
-from flask import Flask, render_template, request, jsonify, send_file, redirect, url_for
+from flask import Flask, render_template, request, jsonify, send_file
 
 import render_engine as eng
 
@@ -28,18 +27,13 @@ OUTPUT_DIR = HERE / "output"
 OUTPUT_DIR.mkdir(exist_ok=True)
 ART_DIR = HERE / "art"
 ART_DIR.mkdir(exist_ok=True)
-CLIPS_DIR = HERE / "generated_clips"
-CLIPS_DIR.mkdir(exist_ok=True)
 JOBS_FILE = HERE / "jobs.json"
 
 app = Flask(__name__)
-app.config["MAX_CONTENT_LENGTH"] = 2 * 1024 * 1024 * 1024  # 2GB uploads
+app.config["MAX_CONTENT_LENGTH"] = 2 * 1024 * 1024 * 1024
 
-# job_id -> dict(status, stage, progress, log, output, output_name, created,
-#                 title, audio_name, settings, script_name, preview)
 JOBS = {}
 JOBS_LOCK = threading.Lock()
-
 JOB_QUEUE = queue.Queue()
 
 
@@ -55,10 +49,8 @@ def _load_jobs():
                 job["stage"] = "Interrupted (server restarted)"
             JOBS[job_id] = job
 
-
 def _save_jobs():
     with JOBS_LOCK:
-        # don't persist full per-line logs forever
         slim = {}
         for job_id, job in JOBS.items():
             j = dict(job)
@@ -69,40 +61,21 @@ def _save_jobs():
         except Exception:
             pass
 
-
 _load_jobs()
-
-
-def _seed_builtin_presets():
-    for name, settings in eng.BUILTIN_PRESETS.items():
-        fname = PRESETS_DIR / f"{name}.json"
-        if not fname.exists():
-            fname.write_text(json.dumps(settings, indent=2))
-
-
-_seed_builtin_presets()
 
 
 def list_presets():
     return sorted(p.stem for p in PRESETS_DIR.glob("*.json"))
 
-
 def list_art():
     exts = {".jpg", ".jpeg", ".png"}
-    return sorted(p.name for p in ART_DIR.iterdir() if p.suffix.lower() in exts)
+    return sorted(p.name for p in ART_DIR.iterdir()
+                  if p.suffix.lower() in exts and not p.name.startswith("wm_"))
 
-
-def list_clips():
-    return sorted(p.name for p in CLIPS_DIR.glob("*.mp4") if not p.name.startswith("bg_"))
-
-
-def list_watermarks():
+def list_qr():
     exts = {".jpg", ".jpeg", ".png"}
-    return sorted(p.name for p in ART_DIR.iterdir() if p.suffix.lower() in exts and p.name.startswith("wm_"))
-
-
-def list_bg_videos():
-    return sorted(p.name for p in CLIPS_DIR.glob("bg_*.mp4"))
+    return sorted(p.name for p in ART_DIR.iterdir()
+                  if p.suffix.lower() in exts)
 
 
 def _job_worker():
@@ -118,7 +91,6 @@ def _job_worker():
                     JOBS[job_id]["log"].append(f"Unexpected error: {e}")
             _save_jobs()
 
-
 threading.Thread(target=_job_worker, daemon=True).start()
 
 
@@ -130,13 +102,13 @@ def _run_job(job_id):
         job["progress"] = 0.0
     _save_jobs()
 
-    settings = job["settings"]
-    audio_path = Path(job["audio_path"])
-    art_path = Path(job["art_path"])
-    output_path = Path(job["output_path"])
-    script_path = Path(job["script_path"]) if job.get("script_path") else None
-    title = job.get("title", "")
-    preview_seconds = job.get("preview_seconds")
+    settings      = job["settings"]
+    audio_path    = Path(job["audio_path"])
+    art_path      = Path(job["art_path"]) if job.get("art_path") else None
+    output_path   = Path(job["output_path"])
+    script_path   = Path(job["script_path"]) if job.get("script_path") else None
+    title         = job.get("title", "")
+    preview_secs  = job.get("preview_seconds")
     outline_titles = job.get("outline_titles")
 
     def progress_cb(stage, frac):
@@ -151,9 +123,11 @@ def _run_job(job_id):
         _save_jobs()
 
     ok = eng.render_job(
-        settings, audio_path, output_path, art_path,
-        title=title, script_path=script_path, progress_cb=progress_cb, log_cb=log_cb,
-        preview_seconds=preview_seconds, outline_titles=outline_titles,
+        settings, audio_path, output_path,
+        art_path=str(art_path) if art_path else None,
+        title=title, script_path=script_path,
+        progress_cb=progress_cb, log_cb=log_cb,
+        preview_seconds=preview_secs, outline_titles=outline_titles,
     )
     with JOBS_LOCK:
         job["status"] = "done" if ok else "failed"
@@ -170,12 +144,11 @@ def index():
         "index.html",
         presets=list_presets(),
         art_files=list_art(),
-        clips=list_clips(),
-        watermarks=list_watermarks(),
-        bg_videos=list_bg_videos(),
+        qr_files=list_qr(),
         defaults=eng.DEFAULTS,
         bg_styles=eng.BG_STYLES,
         caption_styles=eng.CAPTION_STYLES,
+        outline_styles=eng.OUTLINE_STYLES,
     )
 
 
@@ -186,12 +159,17 @@ def get_preset(name):
         return jsonify({"error": "not found"}), 404
     return jsonify(json.loads(fname.read_text()))
 
-
 @app.route("/preset/<name>", methods=["POST"])
 def save_preset(name):
     settings = request.get_json()
     fname = PRESETS_DIR / f"{secure_filename(name)}.json"
     fname.write_text(json.dumps(settings, indent=2))
+    return jsonify({"ok": True})
+
+@app.route("/preset/<name>", methods=["DELETE"])
+def delete_preset(name):
+    fname = PRESETS_DIR / f"{secure_filename(name)}.json"
+    fname.unlink(missing_ok=True)
     return jsonify({"ok": True})
 
 
@@ -202,36 +180,18 @@ def upload_art():
     f.save(ART_DIR / fname)
     return jsonify({"ok": True, "filename": fname})
 
-
-@app.route("/upload/clip", methods=["POST"])
-def upload_clip():
-    kind = request.form.get("kind", "intro")
+@app.route("/upload/qr", methods=["POST"])
+def upload_qr():
     f = request.files["file"]
-    fname = f"{kind}_{secure_filename(f.filename)}"
-    f.save(CLIPS_DIR / fname)
-    return jsonify({"ok": True, "filename": fname})
-
-
-@app.route("/upload/watermark", methods=["POST"])
-def upload_watermark():
-    f = request.files["file"]
-    fname = f"wm_{secure_filename(f.filename)}"
+    fname = secure_filename(f.filename)
     f.save(ART_DIR / fname)
-    return jsonify({"ok": True, "filename": fname})
-
-
-@app.route("/upload/bgvideo", methods=["POST"])
-def upload_bgvideo():
-    f = request.files["file"]
-    fname = f"bg_{secure_filename(f.filename)}"
-    f.save(CLIPS_DIR / fname)
-    return jsonify({"ok": True, "filename": fname})
+    return jsonify({"ok": True, "filename": fname, "path": str(ART_DIR / fname)})
 
 
 @app.route("/extract_outline", methods=["POST"])
 def extract_outline():
     f = request.files["script"]
-    tmp = Path(tempfile.gettempdir()) / f"vbvn_outline_extract_{uuid.uuid4().hex[:8]}.docx"
+    tmp = Path(tempfile.gettempdir()) / f"vbvn_outline_{uuid.uuid4().hex[:8]}.docx"
     f.save(tmp)
     try:
         points = eng.extract_outline_from_script(tmp)
@@ -239,162 +199,92 @@ def extract_outline():
         tmp.unlink(missing_ok=True)
     return jsonify({"titles": [t for t, _ in points]})
 
-
-@app.route("/generate_clip", methods=["POST"])
-def generate_clip():
-    data = request.get_json()
-    kind = data.get("kind", "intro")
-    text = data.get("text", "")
-    duration = float(data.get("duration", 4))
-    s = data["settings"]
-
-    out_path = CLIPS_DIR / f"{kind}_{uuid.uuid4().hex[:8]}.mp4"
-    ok, err = _generate_clip(s, kind, text, duration, out_path)
-    if not ok:
-        return jsonify({"ok": False, "error": err[-1500:]}), 400
-    return jsonify({"ok": True, "filename": out_path.name})
-
-
-def _generate_clip(s, kind, text, duration, out_path):
-    import subprocess
-    import tempfile
-
-    ffmpeg = eng.find_ffmpeg()
-    glow_loop = Path(tempfile.gettempdir()) / f"vbvn_web_clipgen_{uuid.uuid4().hex[:8]}.mp4"
-    half = s["pulse_speed"] / 2
-    # Halved canvas + sigma so gblur (the main CPU cost) is ~4x faster for clip generation
-    glow_src, glow_pad = 300, 350
-    canvas = glow_src + glow_pad * 2
-    sigma = max(1, int(s["glow_sigma"] / 2))
-    cmd1 = [
-        ffmpeg, "-f", "lavfi",
-        "-i", f"color=c={s['glow_color']}:s={glow_src}x{glow_src}:r={s['fps']}",
-        "-filter_complex",
-        f"[0:v]pad={canvas}:{canvas}:{glow_pad}:{glow_pad}:black,"
-        f"gblur=sigma={sigma},"
-        f"fade=t=in:st=0:d={half}:color=black,"
-        f"fade=t=out:st={half}:d={half}:color=black[out]",
-        "-map", "[out]", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "22",
-        "-t", str(s["pulse_speed"]), str(glow_loop), "-y", "-loglevel", "error",
-    ]
-    r = subprocess.run(cmd1, capture_output=True, text=True)
-    if r.returncode != 0:
-        return False, r.stderr
-
-    bg_chain = eng.build_bg_chain(s, s["fps"])
-
-    text_filter = ""
-    if text:
-        text = text.replace(r"\n", "\n")
-        escaped = text.replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'")
-        text_filter = (
-            f",drawtext=text='{escaped}':font={s['title_font']}:"
-            f"fontsize={s['title_font_size']}:fontcolor={s['title_color']}:"
-            f"x=(w-text_w)/2:y=(h-text_h)/2:box=1:boxcolor=black@0.4:boxborderw=12"
-        )
-
-    filter_complex = (
-        f"[0:v]format=rgb24[glow_pulsed];"
-        f"{bg_chain};"
-        f"[bg][glow_pulsed]overlay=(W-w)/2:(H-h)/2:format=auto"
-        f"{text_filter},"
-        f"fade=t=in:st=0:d=0.5,fade=t=out:st={duration - 0.5}:d=0.5[out]"
-    )
-
-    cmd2 = [
-        ffmpeg,
-        "-stream_loop", "-1", "-i", str(glow_loop),
-        "-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100",
-        "-filter_complex", filter_complex,
-        "-map", "[out]", "-map", "1:a",
-        "-t", str(duration),
-        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "20", "-pix_fmt", "yuv420p",
-        "-c:a", "aac", "-b:a", "192k", "-ar", "44100",
-        "-movflags", "+faststart",
-        str(out_path), "-y", "-loglevel", "error",
-    ]
-    r = subprocess.run(cmd2, capture_output=True, text=True)
-    glow_loop.unlink(missing_ok=True)
-    if r.returncode != 0:
-        return False, r.stderr
-    return True, ""
+@app.route("/extract_questions", methods=["POST"])
+def extract_questions():
+    f = request.files["script"]
+    tmp = Path(tempfile.gettempdir()) / f"vbvn_q_{uuid.uuid4().hex[:8]}.docx"
+    f.save(tmp)
+    try:
+        questions = eng.extract_discussion_questions(tmp)
+    finally:
+        tmp.unlink(missing_ok=True)
+    return jsonify({"questions": [q for q, _ in questions]})
 
 
 @app.route("/render", methods=["POST"])
 def render():
-    settings = json.loads(request.form["settings"])
-    title = request.form.get("title", "").strip()
-    preview = request.form.get("preview", "").lower() in ("1", "true", "yes")
-    outline_titles_raw = request.form.get("outline_titles", "")
-    outline_titles = json.loads(outline_titles_raw) if outline_titles_raw else None
+    settings       = json.loads(request.form["settings"])
+    title          = request.form.get("title", "").strip()
+    preview        = request.form.get("preview", "").lower() in ("1", "true", "yes")
+    outline_titles = json.loads(request.form["outline_titles"]) if request.form.get("outline_titles") else None
 
-    audio_file = request.files["audio"]
-    audio_name = secure_filename(audio_file.filename)
-    job_id = uuid.uuid4().hex[:12]
-    job_dir = UPLOAD_DIR / job_id
+    audio_file  = request.files["audio"]
+    audio_name  = secure_filename(audio_file.filename)
+    job_id      = uuid.uuid4().hex[:12]
+    job_dir     = UPLOAD_DIR / job_id
     job_dir.mkdir(parents=True, exist_ok=True)
-    audio_path = job_dir / audio_name
+    audio_path  = job_dir / audio_name
     audio_file.save(audio_path)
 
-    art_name = settings.get("art", "")
-    art_path = ART_DIR / art_name
-    if not art_path.exists():
-        return jsonify({"error": f"Art image not found: {art_name}"}), 400
-
-    # resolve intro/outro/generated clip paths relative to CLIPS_DIR if not absolute
-    for key in ("intro_path", "outro_path", "bg_video_path"):
-        val = settings.get(key, "")
-        if val and not Path(val).is_absolute():
-            candidate = CLIPS_DIR / val
+    # Art
+    art_path = None
+    if settings.get("art_enabled", True):
+        art_name = settings.get("art", "")
+        if art_name:
+            candidate = ART_DIR / art_name
             if candidate.exists():
-                settings[key] = str(candidate)
+                art_path = candidate
+            else:
+                return jsonify({"error": f"Art image not found: {art_name}"}), 400
 
-    # resolve watermark image path relative to ART_DIR if not absolute
-    val = settings.get("watermark_path", "")
-    if val and not Path(val).is_absolute():
-        candidate = ART_DIR / val
+    # QR code — resolve path
+    qr_path_val = settings.get("qr_path", "")
+    if qr_path_val and not Path(qr_path_val).is_absolute():
+        candidate = ART_DIR / qr_path_val
         if candidate.exists():
-            settings["watermark_path"] = str(candidate)
+            settings["qr_path"] = str(candidate)
 
+    # Script
     script_path = None
     if "script" in request.files:
-        script_file = request.files["script"]
-        if script_file and script_file.filename:
-            script_path = job_dir / secure_filename(script_file.filename)
-            script_file.save(script_path)
+        sf = request.files["script"]
+        if sf and sf.filename:
+            script_path = job_dir / secure_filename(sf.filename)
+            sf.save(script_path)
 
-    out_name = Path(audio_name).stem + (".preview.mp4" if preview else ".mp4")
+    out_name    = Path(audio_name).stem + (".preview.mp4" if preview else ".mp4")
     output_path = OUTPUT_DIR / job_id / out_name
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     _enqueue_job(job_id, settings, audio_path, art_path, output_path,
-                  title=title, script_path=script_path, audio_name=audio_name,
-                  preview=preview, outline_titles=outline_titles)
-
+                 title=title, script_path=script_path,
+                 audio_name=audio_name, preview=preview,
+                 outline_titles=outline_titles)
     return jsonify({"job_id": job_id})
 
 
-def _enqueue_job(job_id, settings, audio_path, art_path, output_path, title="",
-                  script_path=None, audio_name="", preview=False, outline_titles=None):
+def _enqueue_job(job_id, settings, audio_path, art_path, output_path,
+                 title="", script_path=None, audio_name="",
+                 preview=False, outline_titles=None):
     with JOBS_LOCK:
         JOBS[job_id] = {
-            "status": "queued",
-            "stage": "Queued" + (f" (position {JOB_QUEUE.qsize() + 1})" if JOB_QUEUE.qsize() else ""),
-            "progress": 0.0,
-            "log": [],
-            "output": None,
-            "output_name": output_path.name,
-            "output_path": str(output_path),
-            "audio_path": str(audio_path),
-            "art_path": str(art_path),
-            "script_path": str(script_path) if script_path else None,
-            "settings": settings,
-            "title": title,
-            "audio_name": audio_name,
-            "preview": preview,
+            "status":       "queued",
+            "stage":        "Queued" + (f" (position {JOB_QUEUE.qsize() + 1})" if JOB_QUEUE.qsize() else ""),
+            "progress":     0.0,
+            "log":          [],
+            "output":       None,
+            "output_name":  output_path.name,
+            "output_path":  str(output_path),
+            "audio_path":   str(audio_path),
+            "art_path":     str(art_path) if art_path else None,
+            "script_path":  str(script_path) if script_path else None,
+            "settings":     settings,
+            "title":        title,
+            "audio_name":   audio_name,
+            "preview":      preview,
             "preview_seconds": 12 if preview else None,
             "outline_titles": outline_titles,
-            "created": time.time(),
+            "created":      time.time(),
         }
     _save_jobs()
     JOB_QUEUE.put(job_id)
@@ -407,10 +297,10 @@ def status(job_id):
         if not job:
             return jsonify({"error": "not found"}), 404
         return jsonify({
-            "status": job["status"],
-            "stage": job["stage"],
+            "status":   job["status"],
+            "stage":    job["stage"],
             "progress": job["progress"],
-            "log": job["log"][-30:],
+            "log":      job["log"][-30:],
         })
 
 
@@ -420,14 +310,13 @@ def history():
         items = []
         for job_id, job in JOBS.items():
             items.append({
-                "job_id": job_id,
-                "status": job["status"],
-                "stage": job.get("stage", ""),
-                "progress": job.get("progress", 0),
-                "title": job.get("title") or job.get("audio_name", ""),
-                "audio_name": job.get("audio_name", ""),
-                "preview": job.get("preview", False),
-                "created": job.get("created", 0),
+                "job_id":      job_id,
+                "status":      job["status"],
+                "stage":       job.get("stage", ""),
+                "progress":    job.get("progress", 0),
+                "title":       job.get("title") or job.get("audio_name", ""),
+                "preview":     job.get("preview", False),
+                "created":     job.get("created", 0),
                 "downloadable": bool(job.get("output")),
             })
         items.sort(key=lambda j: j["created"], reverse=True)
@@ -446,29 +335,26 @@ def rerun(job_id):
     if not audio_path.exists():
         return jsonify({"error": "Original audio file no longer available"}), 400
 
-    new_id = uuid.uuid4().hex[:12]
+    new_id  = uuid.uuid4().hex[:12]
     new_dir = UPLOAD_DIR / new_id
     new_dir.mkdir(parents=True, exist_ok=True)
-
     new_audio = new_dir / audio_path.name
     shutil.copy(audio_path, new_audio)
 
     new_script = None
     if old.get("script_path") and Path(old["script_path"]).exists():
-        src_script = Path(old["script_path"])
-        new_script = new_dir / src_script.name
-        shutil.copy(src_script, new_script)
+        src = Path(old["script_path"])
+        new_script = new_dir / src.name
+        shutil.copy(src, new_script)
 
-    out_name = Path(old["output_name"]).name
-    output_path = OUTPUT_DIR / new_id / out_name
-    output_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path = OUTPUT_DIR / new_id / Path(old["output_name"]).name
+    out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    _enqueue_job(
-        new_id, old["settings"], new_audio, Path(old["art_path"]), output_path,
-        title=old.get("title", ""), script_path=new_script,
-        audio_name=old.get("audio_name", ""), preview=old.get("preview", False),
-        outline_titles=old.get("outline_titles"),
-    )
+    art_path = Path(old["art_path"]) if old.get("art_path") else None
+    _enqueue_job(new_id, old["settings"], new_audio, art_path, out_path,
+                 title=old.get("title", ""), script_path=new_script,
+                 audio_name=old.get("audio_name", ""), preview=old.get("preview", False),
+                 outline_titles=old.get("outline_titles"))
     return jsonify({"job_id": new_id})
 
 
@@ -481,8 +367,7 @@ def delete_job(job_id):
     if job["status"] in ("running", "queued"):
         with JOBS_LOCK:
             JOBS[job_id] = job
-        return jsonify({"error": "Cannot delete a job that is running or queued"}), 400
-
+        return jsonify({"error": "Cannot delete a running or queued job"}), 400
     shutil.rmtree(UPLOAD_DIR / job_id, ignore_errors=True)
     shutil.rmtree(OUTPUT_DIR / job_id, ignore_errors=True)
     _save_jobs()

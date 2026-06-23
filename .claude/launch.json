@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "podcast-web-app",
+      "runtimeExecutable": "/Users/nateemmert/podcast-video-gui/whisper-env/bin/python3",
+      "runtimeArgs": ["web_app.py"],
+      "port": 8000
+    }
+  ]
+}
