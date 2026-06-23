@@ -34,8 +34,8 @@ FG = "#e8e8e8"
 FG2 = "#a0a0a0"
 ACCENT = "#c9a84c"
 ACCENT2 = "#e8c56a"
-BTN_BG = "#333333"
-BTN_FG = "#e8e8e8"
+BTN_BG = "#4a4a4a"
+BTN_FG = "#ffffff"
 SEP = "#3a3a3a"
 RED = "#e05050"
 GREEN = "#50c050"
@@ -66,7 +66,7 @@ def _style(root):
 def _btn(parent, text, command, accent=False, danger=False, small=False):
     bg = ACCENT if accent else (RED if danger else BTN_BG)
     fg = BG if accent else BTN_FG
-    fnt = FONT_SMALL if small else FONT_LABEL
+    fnt = (FONT_SMALL[0], FONT_SMALL[1], "bold") if small else (FONT_LABEL[0], FONT_LABEL[1], "bold")
     return tk.Button(parent, text=text, command=command,
                      bg=bg, fg=fg, font=fnt, relief="flat",
                      activebackground=ACCENT2 if accent else "#444",
