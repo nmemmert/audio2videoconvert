@@ -37,7 +37,9 @@ DEFAULTS = {
     "bg_color2": "#1a1a2e",
     # Waveform animation
     "waveform_enabled": True,
-    "waveform_color": "#c9a84c",
+    "waveform_color": "#c9a84c",       # mid-amplitude (normal waves)
+    "waveform_high_color": "#cc3333",  # peaks / loud moments
+    "waveform_low_color": "#3366cc",   # quiet / low amplitude
     "waveform_height": 100,
     # Captions
     "font_name": "Georgia",
@@ -295,17 +297,20 @@ def _subtract_intervals(start, end, blackouts):
 
 def build_sidebar_ass(points, s, duration_f, out_path, start_y=None, end_y=None,
                       art_x=None, blackout=None):
-    """Left-side outline confined to the sidebar column.
+    """Left-side outline: one item per line, expanding to fill the sidebar width.
 
-    Text wraps at the sidebar edge (art_x - padding) so it never overlaps the art.
-    Font size is chosen dynamically so all wrapped lines fill start_y → end_y.
+    Font size is the largest value where:
+      (a) even the longest item fits on a single line within text_px_w, AND
+      (b) all items fit vertically within start_y → end_y
+
+    No Python word-wrapping — each item is always a single line so the text
+    fills right up to the art edge for every item.
 
     start_y  — top of the outline region (below captions)
     end_y    — bottom of the outline region (above waveform)
     art_x    — left edge of the art image; text stays left of this
-    blackout — list of (start, end) intervals to suppress the outline (e.g. question cards)
+    blackout — list of (start, end) intervals where the outline is suppressed
     """
-    import textwrap as _textwrap
     blackout = blackout or []
 
     color = hex_to_ass(s.get("outline_color", "#ffffff"))
@@ -320,44 +325,23 @@ def build_sidebar_ass(points, s, duration_f, out_path, start_y=None, end_y=None,
     if art_x is None:
         art_x = s["width"] // 2
 
+    n = max(len(points), 1)
     available_h = max(1, end_y - start_y)
-    # Usable pixel width for text: from x=24 to art_x - 24 (padding each side)
+    # Usable pixel width: x=24 to art_x-24
     text_px_w = max(80, art_x - 48)
 
-    # Find the largest font size (between 18 and 54) where all wrapped lines fit
-    # Character width approximation: size * 0.58 pixels per char (proportional font)
-    def _wrap_all(size):
-        chars = max(4, int(text_px_w / (size * 0.58)))
-        wrapped = []
-        for _, text in points:
-            escaped = text.replace("\\", "\\\\").replace("{", "").replace("}", "")
-            wrapped.append(_textwrap.wrap(escaped, chars) or [escaped])
-        return wrapped
+    # Longest item drives the horizontal font cap
+    longest = max((len(text) for _, text in points), default=1)
+    # Georgia character width ≈ size × 0.62 px; be slightly conservative at 0.65
+    size_for_width  = max(18, int(text_px_w / (longest * 0.65)))
+    # Each item gets equal vertical slot; font must fit within slot
+    size_for_height = max(18, (available_h // n) - 10)
+    size = min(52, size_for_width, size_for_height)
+    size = max(18, size)
 
-    size = 18
-    for candidate in range(54, 17, -1):
-        wrapped_items = _wrap_all(candidate)
-        total_lines = sum(len(w) for w in wrapped_items)
-        line_px = candidate + 8  # font size + inter-line gap
-        if total_lines * line_px <= available_h:
-            size = candidate
-            wrapped_items_final = wrapped_items
-            total_lines_final = total_lines
-            break
-    else:
-        wrapped_items_final = _wrap_all(size)
-        total_lines_final = sum(len(w) for w in wrapped_items_final)
-
-    # Distribute space proportionally: each item's slot = its line count / total lines.
-    # A 2-line item gets exactly twice the vertical space of a 1-line item,
-    # so spacing between items is always consistent regardless of wrapping.
-    line_h = size + 10  # pixels per text line
-    line_counts = [len(w) for w in wrapped_items_final]
-    total_lines_used = sum(line_counts)
-    # px per "line unit" — each item slot = line_count * px_per_unit
-    px_per_unit = available_h / max(total_lines_used, 1)
-    # Inner fraction of each slot used for text; the rest is whitespace
-    FILL = 0.72  # 72% text, 28% breathing room
+    # Equal slot per item; 72% used for text, 28% is breathing room
+    item_slot = available_h / n
+    FILL = 0.72
 
     header = f"""[Script Info]
 ScriptType: v4.00+
@@ -374,32 +358,24 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """
     lines = [header]
     dim_hex = "888888"
-    cursor = start_y  # running y position as we place items
-    for i, (start, _) in enumerate(points):
-        wrapped = wrapped_items_final[i]
-        ass_text = r"\N".join(wrapped)
-        n_lines = line_counts[i]
-        slot_h = px_per_unit * n_lines          # proportional slot height
-        margin = slot_h * (1 - FILL) / 2        # equal top/bottom padding
-        text_block_h = n_lines * line_h
-        # Centre text block inside the inner FILL portion of the slot
-        inner_h = slot_h * FILL
-        y = int(cursor + margin + (inner_h - text_block_h) / 2)
+    line_h = size  # single line per item — no wrapping
+    for i, (start, text) in enumerate(points):
+        escaped = text.replace("\\", "\\\\").replace("{", "").replace("}", "")
+        slot_top = start_y + i * item_slot
+        margin   = item_slot * (1 - FILL) / 2
+        y = int(slot_top + margin + (item_slot * FILL - line_h) / 2)
 
         if start < duration_f:
             pos = f"\\pos(24,{y})\\an7"
             next_start = points[i + 1][0] if i + 1 < len(points) else duration_f
             active_end = min(next_start, duration_f)
-            # Active (bright) phase — subtract question card intervals
             for seg_s, seg_e in _subtract_intervals(start, active_end, blackout):
                 tag = f"{{{pos}\\fad(400,0)}}"
-                lines.append(f"Dialogue: 0,{_ass_fmt(seg_s)},{_ass_fmt(seg_e)},Default,,0,0,0,,{tag}{ass_text}")
-            # Dimmed phase — also subtract question card intervals
+                lines.append(f"Dialogue: 0,{_ass_fmt(seg_s)},{_ass_fmt(seg_e)},Default,,0,0,0,,{tag}{escaped}")
             for seg_s, seg_e in _subtract_intervals(active_end, duration_f, blackout):
                 tag = f"{{{pos}\\c&H{dim_hex}&}}"
-                lines.append(f"Dialogue: 0,{_ass_fmt(seg_s)},{_ass_fmt(seg_e)},Default,,0,0,0,,{tag}{ass_text}")
+                lines.append(f"Dialogue: 0,{_ass_fmt(seg_s)},{_ass_fmt(seg_e)},Default,,0,0,0,,{tag}{escaped}")
 
-        cursor += slot_h
     out_path.write_text("\n".join(lines))
 
 
@@ -1033,9 +1009,20 @@ def render_job(s, audio_path, output_path, art_path=None,
             prev = "[bg_qcard]"
 
         if wave_enabled:
-            wc = s.get("waveform_color", "#c9a84c")
-            fp.append(f"[{audio_idx}:a]showwaves=s={width}x{wave_h}:mode=cline:colors={wc},format=rgba[wave]")
-            fp.append(f"{prev}[wave]overlay=0:{height - wave_h}:format=auto[bg_wave]")
+            wc_high = s.get("waveform_high_color", "#cc3333")  # peaks  → red
+            wc_mid  = s.get("waveform_color",      "#c9a84c")  # normal → gold
+            wc_low  = s.get("waveform_low_color",  "#3366cc")  # quiet  → blue
+            yo = height - wave_h  # y offset for all wave overlays
+            # Layer 1 (bottom): full volume → high color visible at peaks
+            fp.append(f"[{audio_idx}:a]asplit=3[aw1][aw2][aw3]")
+            fp.append(f"[aw1]showwaves=s={width}x{wave_h}:mode=cline:colors={wc_high},format=rgba[wv1]")
+            # Layer 2: 55% volume → mid color covers the lower-amplitude portion
+            fp.append(f"[aw2]volume=0.55,showwaves=s={width}x{wave_h}:mode=cline:colors={wc_mid},format=rgba[wv2]")
+            # Layer 3: 20% volume → low color covers the quietest portion
+            fp.append(f"[aw3]volume=0.20,showwaves=s={width}x{wave_h}:mode=cline:colors={wc_low},format=rgba[wv3]")
+            fp.append(f"{prev}[wv1]overlay=0:{yo}:format=auto[bg_wv1]")
+            fp.append(f"[bg_wv1][wv2]overlay=0:{yo}:format=auto[bg_wv2]")
+            fp.append(f"[bg_wv2][wv3]overlay=0:{yo}:format=auto[bg_wave]")
             prev = "[bg_wave]"
 
         # Subtitles and title drawtext are chained as trailing filters on the last label

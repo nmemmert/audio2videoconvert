@@ -207,10 +207,18 @@ progress { width:100%; height:8px; accent-color:var(--accent); }
         <input type="checkbox" id="waveform_enabled">
         <label for="waveform_enabled">Show waveform bar at bottom (never overlaps art or outline)</label>
       </div>
-      <div class="row" style="margin-top:8px;">
+      <div class="grid2" style="margin-top:8px;">
         <div>
-          <label class="field-label">Color</label>
+          <label class="field-label">Normal waves</label>
           <input type="color" id="waveform_color">
+        </div>
+        <div>
+          <label class="field-label">Peaks (loud)</label>
+          <input type="color" id="waveform_high_color">
+        </div>
+        <div>
+          <label class="field-label">Quiet (low)</label>
+          <input type="color" id="waveform_low_color">
         </div>
         <div>
           <label class="field-label">Height (px)</label>

@@ -149,6 +149,8 @@ class App(tk.Tk):
 
         self.v_wave_enabled = tk.BooleanVar(value=d["waveform_enabled"])
         self.v_wave_color = tk.StringVar(value=d["waveform_color"])
+        self.v_wave_high_color = tk.StringVar(value=d["waveform_high_color"])
+        self.v_wave_low_color = tk.StringVar(value=d["waveform_low_color"])
         self.v_wave_height = tk.IntVar(value=d["waveform_height"])
 
         self.v_caption_style = tk.StringVar(value=d["caption_style"])
@@ -301,12 +303,19 @@ class App(tk.Tk):
                self.v_wave_enabled).pack(anchor="w", pady=(0, 12))
 
         r_wave = tk.Frame(wc, bg=BG2)
-        r_wave.pack(fill="x")
-        _lbl(r_wave, "Color:", small=True, bg=BG2).pack(side="left")
+        r_wave.pack(fill="x", pady=(0, 8))
+        _lbl(r_wave, "Normal:", small=True, bg=BG2).pack(side="left")
         _entry(r_wave, self.v_wave_color, width=9).pack(side="left", padx=6)
-        _lbl(r_wave, "Height:", small=True, bg=BG2).pack(side="left", padx=(12, 0))
-        _spin(r_wave, 40, 200, self.v_wave_height).pack(side="left", padx=6)
-        _lbl(r_wave, "px", small=True, bg=BG2).pack(side="left")
+        _lbl(r_wave, "Peaks:", small=True, bg=BG2).pack(side="left", padx=(8, 0))
+        _entry(r_wave, self.v_wave_high_color, width=9).pack(side="left", padx=6)
+        _lbl(r_wave, "Quiet:", small=True, bg=BG2).pack(side="left", padx=(8, 0))
+        _entry(r_wave, self.v_wave_low_color, width=9).pack(side="left", padx=6)
+
+        r_wave2 = tk.Frame(wc, bg=BG2)
+        r_wave2.pack(fill="x")
+        _lbl(r_wave2, "Height:", small=True, bg=BG2).pack(side="left")
+        _spin(r_wave2, 40, 200, self.v_wave_height).pack(side="left", padx=6)
+        _lbl(r_wave2, "px", small=True, bg=BG2).pack(side="left")
 
         # ── Outline ──────────────────────────────────────────────────────────
         _section(p, "Outline")
@@ -535,6 +544,8 @@ class App(tk.Tk):
             "bg_color2": self.v_bg_color2.get(),
             "waveform_enabled": self.v_wave_enabled.get(),
             "waveform_color": self.v_wave_color.get(),
+            "waveform_high_color": self.v_wave_high_color.get(),
+            "waveform_low_color": self.v_wave_low_color.get(),
             "waveform_height": self.v_wave_height.get(),
             "caption_style": self.v_caption_style.get(),
             "words_per_chunk": self.v_words_per_chunk.get(),
@@ -578,6 +589,8 @@ class App(tk.Tk):
             (self.v_bg_color2, "bg_color2"),
             (self.v_wave_enabled, "waveform_enabled"),
             (self.v_wave_color, "waveform_color"),
+            (self.v_wave_high_color, "waveform_high_color"),
+            (self.v_wave_low_color, "waveform_low_color"),
             (self.v_wave_height, "waveform_height"),
             (self.v_caption_style, "caption_style"),
             (self.v_words_per_chunk, "words_per_chunk"),
