@@ -190,6 +190,7 @@ class App(tk.Tk):
         self._preset_cb.pack(side="left")
         _btn(pbar, "Load", self._load_preset, small=True).pack(side="left", padx=4)
         _btn(pbar, "Save", self._save_preset, small=True).pack(side="left", padx=2)
+        _btn(pbar, "Reset to Defaults", self._reset_defaults, small=True).pack(side="left", padx=(16, 0))
 
         # Main split: scrollable form | log panel
         mid = tk.Frame(self, bg=BG)
@@ -402,6 +403,8 @@ class App(tk.Tk):
 
         self._render_btn = _btn(ctrl, "▶  Render Video", self._start_render, accent=True)
         self._render_btn.pack(fill="x", pady=(0, 8))
+        self._batch_btn = _btn(ctrl, "⏭  Batch Render…", self._start_batch, small=False)
+        self._batch_btn.pack(fill="x", pady=(0, 8))
         self._cancel_btn = _btn(ctrl, "✕  Cancel", self._cancel_render, danger=True)
         self._cancel_btn.pack(fill="x")
         self._cancel_btn.config(state="disabled")
@@ -619,6 +622,21 @@ class App(tk.Tk):
         self._refresh_presets()
         self._append_log(f"Saved preset: {name}", "accent")
 
+    def _reset_defaults(self):
+        if not messagebox.askyesno("Reset", "Reset all settings to defaults?"):
+            return
+        self._apply_settings(eng.DEFAULTS)
+        # Clear file paths too
+        self.v_audio.set("")
+        self.v_output.set("")
+        self.v_title.set("")
+        self.v_script.set("")
+        self.v_qr_path.set("")
+        for w in self._outline_list_frame.winfo_children():
+            w.destroy()
+        self._outline_checks.clear()
+        self._append_log("Settings reset to defaults.", "accent")
+
     # ── Render ───────────────────────────────────────────────────────────────
 
     def _start_render(self):
@@ -674,6 +692,62 @@ class App(tk.Tk):
 
         threading.Thread(target=run, daemon=True).start()
 
+    def _start_batch(self):
+        files = filedialog.askopenfilenames(
+            title="Select audio files for batch render",
+            filetypes=[("Audio", "*.mp3 *.m4a *.wav *.aac *.flac *.ogg"), ("All", "*.*")])
+        if not files:
+            return
+
+        s = self._collect_settings()
+        art_path = None
+        if s["art_enabled"]:
+            p = ART_DIR / s["art"]
+            if not p.exists():
+                messagebox.showerror("Error", f"Art image not found: {s['art']}")
+                return
+            art_path = str(p)
+
+        script_path = self.v_script.get().strip() or None
+        outline_titles = None
+        if script_path and self._outline_checks:
+            selected = [t for t, var in self._outline_checks if var.get()]
+            if selected:
+                outline_titles = [{"title": t, "original": t} for t in selected]
+
+        self._render_btn.config(state="disabled")
+        self._batch_btn.config(state="disabled")
+        self._cancel_btn.config(state="normal")
+        self._progress["value"] = 0
+        self._log_text.config(state="normal")
+        self._log_text.delete("1.0", "end")
+        self._log_text.config(state="disabled")
+
+        total = len(files)
+
+        def run_batch():
+            for idx, audio in enumerate(files, 1):
+                name = Path(audio).stem
+                out = str(OUTPUT_DIR / f"{name}.mp4")
+                self._log_q.put(("log", f"── File {idx}/{total}: {Path(audio).name}"))
+                self._log_q.put(("progress", f"File {idx}/{total}", (idx - 1) / total))
+                ok = eng.render_job(
+                    s, audio, out,
+                    art_path=art_path,
+                    title=name.replace("_", " ").replace("-", " ").title(),
+                    script_path=script_path,
+                    outline_titles=outline_titles,
+                    progress_cb=lambda stage, frac, i=idx: self._log_q.put((
+                        "progress", f"File {i}/{total} — {stage}", ((i - 1) + frac) / total)),
+                    log_cb=lambda msg: self._log_q.put(("log", msg)),
+                )
+                tag = "good" if ok else "bad"
+                self._log_q.put(("log", f"{'✓' if ok else '✗'} {Path(audio).name} → {out}", tag))
+
+            self._log_q.put(("done_batch", total))
+
+        threading.Thread(target=run_batch, daemon=True).start()
+
     def _cancel_render(self):
         self._append_log("Cancel requested — the current step will finish then stop.", "bad")
         self._cancel_btn.config(state="disabled")
@@ -685,7 +759,9 @@ class App(tk.Tk):
             while True:
                 item = self._log_q.get_nowait()
                 if item[0] == "log":
-                    self._append_log(item[1])
+                    # item = ("log", msg) or ("log", msg, tag)
+                    tag = item[2] if len(item) > 2 else None
+                    self._append_log(item[1], tag)
                 elif item[0] == "progress":
                     _, stage, frac = item
                     self._stage_lbl.config(text=f"{stage}  {int(frac * 100)}%")
@@ -700,6 +776,15 @@ class App(tk.Tk):
                         self._append_log("✗ Render failed — see log above.", "bad")
                         self._stage_lbl.config(text="Failed")
                     self._render_btn.config(state="normal")
+                    self._batch_btn.config(state="normal")
+                    self._cancel_btn.config(state="disabled")
+                elif item[0] == "done_batch":
+                    _, total = item
+                    self._append_log(f"✓ Batch complete — {total} file(s) rendered.", "good")
+                    self._stage_lbl.config(text="Batch done")
+                    self._progress["value"] = 100
+                    self._render_btn.config(state="normal")
+                    self._batch_btn.config(state="normal")
                     self._cancel_btn.config(state="disabled")
         except queue.Empty:
             pass
