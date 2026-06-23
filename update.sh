@@ -197,6 +197,71 @@ info "Installing / upgrading Python packages (this may take several minutes on f
 
 ok "Python packages up to date."
 
+# ── Fonts ─────────────────────────────────────────────────────────────────────
+bar
+echo "  Installing fonts…"
+bar
+
+FONTS_DIR="$HOME/.local/share/fonts/podcast-video"
+mkdir -p "$FONTS_DIR"
+
+_dl_font() {
+    local name="$1" url="$2"
+    if [[ ! -f "$FONTS_DIR/$name" ]]; then
+        info "Downloading $name…"
+        curl -fsSL -o "$FONTS_DIR/$name" "$url" && ok "$name" \
+            || echo "  ⚠  Could not download $name (skipping)"
+    else
+        ok "$name already present."
+    fi
+}
+
+# Serif fonts used for captions, outlines, titles
+_dl_font "EBGaramond-Regular.ttf" \
+    "https://github.com/google/fonts/raw/main/ofl/ebgaramond/EBGaramond-Regular.ttf"
+_dl_font "EBGaramond-Italic.ttf" \
+    "https://github.com/google/fonts/raw/main/ofl/ebgaramond/EBGaramond-Italic.ttf"
+_dl_font "EBGaramond-Bold.ttf" \
+    "https://github.com/google/fonts/raw/main/ofl/ebgaramond/EBGaramond-Bold.ttf"
+_dl_font "PlayfairDisplay-Regular.ttf" \
+    "https://github.com/google/fonts/raw/main/ofl/playfairdisplay/PlayfairDisplay%5Bwght%5D.ttf"
+_dl_font "Merriweather-Regular.ttf" \
+    "https://github.com/google/fonts/raw/main/ofl/merriweather/Merriweather-Regular.ttf"
+_dl_font "LibreBaskerville-Regular.ttf" \
+    "https://github.com/google/fonts/raw/main/ofl/librebaskerville/LibreBaskerville-Regular.ttf"
+_dl_font "Lato-Regular.ttf" \
+    "https://github.com/google/fonts/raw/main/ofl/lato/Lato-Regular.ttf"
+_dl_font "Lato-Bold.ttf" \
+    "https://github.com/google/fonts/raw/main/ofl/lato/Lato-Bold.ttf"
+_dl_font "Montserrat-Regular.ttf" \
+    "https://github.com/google/fonts/raw/main/ofl/montserrat/Montserrat%5Bwght%5D.ttf"
+_dl_font "Oswald-Regular.ttf" \
+    "https://github.com/google/fonts/raw/main/ofl/oswald/Oswald%5Bwght%5D.ttf"
+
+# Georgia and other Microsoft Core Fonts (includes Georgia, Arial, etc.)
+# Try system package first, then fall back to cabextract method.
+if ! fc-list 2>/dev/null | grep -qi "georgia"; then
+    info "Georgia not found — attempting to install Microsoft Core Fonts…"
+    if command -v apt-get &>/dev/null; then
+        echo "ttf-mscorefonts-installer msttcorefonts/accepted-mscorefonts-eula select true" \
+            | sudo debconf-set-selections 2>/dev/null || true
+        sudo apt-get install -y ttf-mscorefonts-installer 2>/dev/null \
+            && ok "Microsoft Core Fonts installed via apt." \
+            || info "apt install failed — skipping Georgia."
+    elif command -v dnf &>/dev/null; then
+        sudo dnf install -y mscore-fonts-all 2>/dev/null \
+            && ok "Microsoft Core Fonts installed via dnf." \
+            || info "dnf install failed — skipping Georgia. EB Garamond is a good substitute."
+    fi
+else
+    ok "Georgia already installed."
+fi
+
+# Refresh fontconfig cache so ffmpeg can find the new fonts
+if command -v fc-cache &>/dev/null; then
+    fc-cache -f "$FONTS_DIR" 2>/dev/null && ok "Font cache refreshed."
+fi
+
 # ── Launcher scripts ──────────────────────────────────────────────────────────
 bar
 echo "  Writing launcher scripts…"
