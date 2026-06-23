@@ -81,6 +81,44 @@ BG_STYLES = ["solid", "gradient"]
 CAPTION_STYLES = ["karaoke", "fade", "bounce"]
 OUTLINE_STYLES = ["sidebar", "ticker"]
 
+def _discover_fonts():
+    """Return a sorted list of font family names visible to fontconfig."""
+    try:
+        out = subprocess.check_output(["fc-list", "--format=%{family[0]}\n"],
+                                      stderr=subprocess.DEVNULL, text=True)
+        names = sorted({n.strip() for n in out.splitlines()
+                        if n.strip() and not n.strip().startswith(".")})
+        return names if names else ["Georgia"]
+    except Exception:
+        return ["Georgia"]
+
+AVAILABLE_FONTS = _discover_fonts()
+
+# Preferred serif fonts in priority order; first one found becomes the default.
+_PREFERRED_SERIFS = [
+    "Georgia", "EB Garamond", "Cormorant Garamond",
+    "Playfair Display", "Merriweather", "Libre Baskerville",
+    "Liberation Serif", "DejaVu Serif",
+]
+DEFAULT_FONT = next((f for f in _PREFERRED_SERIFS if f in AVAILABLE_FONTS), "Georgia")
+
+# Patch DEFAULTS so the UI and renderer agree on the best available serif.
+for _k in ("font_name", "outline_font", "title_font"):
+    if DEFAULTS.get(_k) == "Georgia" and DEFAULT_FONT != "Georgia":
+        DEFAULTS[_k] = DEFAULT_FONT
+
+
+def _font_file(name: str) -> str | None:
+    """Return the first TTF/OTF file path for *name* from fontconfig, or None."""
+    try:
+        out = subprocess.check_output(
+            ["fc-match", "--format=%{file}", name],
+            stderr=subprocess.DEVNULL, text=True,
+        ).strip()
+        return out if out else None
+    except Exception:
+        return None
+
 PYTHON_VENV = Path.home() / "whisper-env" / "bin" / "python3"
 
 
@@ -944,9 +982,11 @@ def render_job(s, audio_path, output_path, art_path=None,
         title_filter = ""
         if title and s.get("title_enabled", True):
             escaped = title.replace("\\", "\\\\").replace("'", "\\'").replace(":", "\\:")
-            fn = s.get("title_font", "Georgia").replace("'", "\\'")
+            fn = s.get("title_font", "Georgia")
+            ff = _font_file(fn)
+            font_arg = f"fontfile='{ff}'" if ff else f"font='{fn.replace(chr(39), '')}'"
             title_filter = (
-                f",drawtext=text={escaped}:font='{fn}':"
+                f",drawtext=text={escaped}:{font_arg}:"
                 f"fontsize={s.get('title_font_size', 48)}:fontcolor={s.get('title_color', 'white')}:"
                 f"x=(w-text_w)/2:y=72:box=1:boxcolor=black@0.4:boxborderw=10"
             )
@@ -987,7 +1027,7 @@ def render_job(s, audio_path, output_path, art_path=None,
 
         if art_enabled:
             audio_idx = 1
-            fp.append(f"[0:v]scale={art_size}:{art_size},format=rgb24[art_sharp]")
+            fp.append(f"[0:v]crop=min(iw\\,ih):min(iw\\,ih),scale={art_size}:{art_size},format=rgb24[art_sharp]")
             fp.append(bg_filter)
             if s.get("glow_enabled", True):
                 fp.append(f"[art_sharp]gblur=sigma={glow_sigma}[glow_soft]")

@@ -244,6 +244,16 @@ progress { width:100%; height:8px; accent-color:var(--accent); }
           <input type="radio" name="outline_style" value="ticker" id="outline_style_ticker"> Chapter ticker
         </label>
       </div>
+      <div class="grid2" style="margin-top:10px;">
+        <div>
+          <label class="field-label">Outline font</label>
+          <select id="outline_font"></select>
+        </div>
+        <div>
+          <label class="field-label">Outline font size</label>
+          <input type="number" id="outline_font_size" min="12" max="72">
+        </div>
+      </div>
       <label class="field-label" style="margin-top:10px;">Script (.docx) — extracts section headers</label>
       <input type="file" id="script-file" accept=".docx">
       <div id="outline-checklist-wrap" style="display:none; margin-top:10px;">
@@ -322,6 +332,10 @@ progress { width:100%; height:8px; accent-color:var(--accent); }
           <label class="field-label">Font size</label>
           <input type="number" id="font_size" min="24" max="120">
         </div>
+        <div style="grid-column:1/-1;">
+          <label class="field-label">Caption font</label>
+          <select id="font_name"></select>
+        </div>
       </div>
     </div>
 
@@ -386,6 +400,7 @@ const DEFAULTS      = {{ defaults|tojson }};
 const BG_STYLES     = {{ bg_styles|tojson }};
 const CAPTION_STYLES = {{ caption_styles|tojson }};
 const OUTLINE_STYLES = {{ outline_styles|tojson }};
+const AVAILABLE_FONTS = {{ available_fonts|tojson }};
 let ART_FILES = {{ art_files|tojson }};
 let QR_FILES  = {{ qr_files|tojson }};
 let PRESETS   = {{ presets|tojson }};
@@ -435,6 +450,8 @@ function applySettings(s) {
 
   populateSelect('bg_style', BG_STYLES, merged.bg_style);
   populateSelect('caption_style', CAPTION_STYLES, merged.caption_style);
+  populateSelect('font_name', AVAILABLE_FONTS, merged.font_name || 'Georgia');
+  populateSelect('outline_font', AVAILABLE_FONTS, merged.outline_font || 'Georgia');
   populateSelect('art-select', ART_FILES, merged.art);
   populateSelect('qr-select', ['(none)', ...QR_FILES], merged.qr_path || '(none)');
   populateSelect('qr_corner', ['bottom-right','bottom-left','top-right','top-left'], merged.qr_corner);
@@ -720,6 +737,8 @@ async function loadHistory() {
 
 populateSelect('bg_style', BG_STYLES, DEFAULTS.bg_style);
 populateSelect('caption_style', CAPTION_STYLES, DEFAULTS.caption_style);
+populateSelect('font_name', AVAILABLE_FONTS, DEFAULTS.font_name || 'Georgia');
+populateSelect('outline_font', AVAILABLE_FONTS, DEFAULTS.outline_font || 'Georgia');
 populateSelect('preset-select', PRESETS, PRESETS[0] || '');
 
 if (PRESETS.length) loadSelectedPreset();

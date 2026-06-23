@@ -149,6 +149,7 @@ def index():
         bg_styles=eng.BG_STYLES,
         caption_styles=eng.CAPTION_STYLES,
         outline_styles=eng.OUTLINE_STYLES,
+        available_fonts=eng.AVAILABLE_FONTS,
     )
 
 
