@@ -40,9 +40,9 @@ SEP = "#3a3a3a"
 RED = "#e05050"
 GREEN = "#50c050"
 
-FONT_LABEL = ("Helvetica", 10)
-FONT_BOLD = ("Helvetica", 11, "bold")
-FONT_SMALL = ("Helvetica", 9)
+FONT_LABEL = ("Helvetica", 13)
+FONT_BOLD = ("Helvetica", 14, "bold")
+FONT_SMALL = ("Helvetica", 12)
 
 
 def _style(root):
@@ -71,7 +71,7 @@ def _btn(parent, text, command, accent=False, danger=False, small=False):
                      bg=bg, fg=fg, font=fnt, relief="flat",
                      activebackground=ACCENT2 if accent else "#444",
                      activeforeground=BG if accent else FG,
-                     padx=8 if small else 12, pady=3 if small else 6,
+                     padx=10 if small else 16, pady=5 if small else 9,
                      cursor="hand2", bd=0)
 
 
@@ -82,7 +82,7 @@ def _lbl(parent, text, small=False, color=None, bg=None):
 
 def _section(parent, text):
     tk.Label(parent, text=text, bg=BG, fg=ACCENT,
-             font=("Helvetica", 12, "bold")).pack(anchor="w", padx=28, pady=(20, 5))
+             font=("Helvetica", 15, "bold")).pack(anchor="w", padx=28, pady=(20, 5))
     tk.Frame(parent, bg=SEP, height=1).pack(fill="x", padx=28, pady=(0, 12))
 
 
@@ -180,7 +180,7 @@ class App(tk.Tk):
         top = tk.Frame(self, bg="#111111", padx=20, pady=12)
         top.pack(fill="x")
         tk.Label(top, text="🎙  Podcast Video Generator",
-                 bg="#111111", fg=ACCENT, font=("Helvetica", 15, "bold")).pack(side="left")
+                 bg="#111111", fg=ACCENT, font=("Helvetica", 18, "bold")).pack(side="left")
 
         # Preset bar
         pbar = tk.Frame(self, bg=BG2, padx=24, pady=9)
@@ -423,7 +423,7 @@ class App(tk.Tk):
 
         log_frame = tk.Frame(p, bg=BG)
         log_frame.pack(fill="both", expand=True)
-        self._log_text = tk.Text(log_frame, bg="#111111", fg=FG2, font=("Courier", 9),
+        self._log_text = tk.Text(log_frame, bg="#111111", fg=FG2, font=("Courier", 12),
                                   relief="flat", wrap="word", state="disabled",
                                   padx=16, pady=12)
         log_scroll = ttk.Scrollbar(log_frame, orient="vertical", command=self._log_text.yview)
