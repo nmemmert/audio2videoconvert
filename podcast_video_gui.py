@@ -740,6 +740,7 @@ class App(tk.Tk):
                     art_path=art_path,
                     title=title,
                     script_path=script_p,
+                    outline_titles=job.get("outline_titles"),
                     progress_cb=lambda stage, frac, i=idx: self._log_q.put((
                         "progress", f"Job {i}/{total} — {stage}",
                         ((i - 1) + frac) / total)),
@@ -866,16 +867,18 @@ class BatchDialog(tk.Toplevel):
 
     def _add_row(self, audio="", title="", script="", output=""):
         row_idx = len(self._rows)
-        frame = tk.Frame(self._list_frame, bg=BG2 if row_idx % 2 == 0 else BG, pady=3)
+        bg = BG2 if row_idx % 2 == 0 else BG
+        frame = tk.Frame(self._list_frame, bg=bg, pady=4)
         frame.pack(fill="x", pady=1)
 
-        sel_var = tk.BooleanVar(value=False)
+        sel_var    = tk.BooleanVar(value=False)
         audio_var  = tk.StringVar(value=audio)
         title_var  = tk.StringVar(value=title)
         script_var = tk.StringVar(value=script)
         output_var = tk.StringVar(value=output)
 
-        bg = BG2 if row_idx % 2 == 0 else BG
+        # outline_checks: list of (title_str, BooleanVar) — populated when script is picked
+        outline_checks = []
 
         def pick_audio(av=audio_var, tv=title_var, ov=output_var):
             f = filedialog.askopenfilename(
@@ -887,10 +890,30 @@ class BatchDialog(tk.Toplevel):
                 if not ov.get():
                     ov.set(str(OUTPUT_DIR / (Path(f).stem + ".mp4")))
 
-        def pick_script(sv=script_var):
+        def pick_script(sv=script_var, oc=outline_checks, btn_ref=[None]):
             f = filedialog.askopenfilename(filetypes=[("Word doc", "*.docx"), ("All", "*.*")])
             if f:
                 sv.set(f)
+                _load_outline(f, oc, btn_ref)
+
+        def _load_outline(path, oc, btn_ref):
+            oc.clear()
+            try:
+                points = eng.extract_outline_from_script(path)
+            except Exception:
+                points = []
+            for title_str, _ in points:
+                oc.append((title_str, tk.BooleanVar(value=True)))
+            # Update button label to show count
+            lbl = f"Outline ({len(oc)})" if oc else "Outline (none)"
+            if btn_ref[0]:
+                btn_ref[0].config(text=lbl)
+
+        def open_outline_picker(oc=outline_checks):
+            if not oc:
+                messagebox.showinfo("Outline", "No outline items found.\nSelect a script first.")
+                return
+            OutlinePickerDialog(self, oc)
 
         def pick_output(ov=output_var):
             f = filedialog.asksaveasfilename(defaultextension=".mp4",
@@ -901,13 +924,13 @@ class BatchDialog(tk.Toplevel):
         ttk.Checkbutton(frame, variable=sel_var).pack(side="left", padx=(6, 2))
 
         for var, pick_fn, w in [
-            (audio_var,  pick_audio,  26),
-            (title_var,  None,        18),
-            (script_var, pick_script, 18),
-            (output_var, pick_output, 20),
+            (audio_var,  pick_audio,  22),
+            (title_var,  None,        16),
+            (script_var, pick_script, 16),
+            (output_var, pick_output, 18),
         ]:
             inner = tk.Frame(frame, bg=bg)
-            inner.pack(side="left", padx=3)
+            inner.pack(side="left", padx=2)
             e = tk.Entry(inner, textvariable=var, width=w, bg=BG3, fg=FG,
                          insertbackground=FG, relief="flat", font=FONT_SMALL,
                          highlightthickness=1, highlightbackground=SEP, highlightcolor=ACCENT)
@@ -915,10 +938,21 @@ class BatchDialog(tk.Toplevel):
             if pick_fn:
                 _btn(inner, "…", pick_fn, small=True).pack(side="left", padx=2)
 
+        # Outline picker button — shows item count after script is loaded
+        outline_btn_ref = [None]
+        ob = _btn(frame, "Outline (none)", open_outline_picker, small=True)
+        ob.pack(side="left", padx=4)
+        outline_btn_ref[0] = ob
+
+        # If script was pre-filled, load its outline now
+        if script:
+            _load_outline(script, outline_checks, outline_btn_ref)
+
         self._rows.append({
             "frame": frame, "sel": sel_var,
             "audio": audio_var, "title": title_var,
             "script": script_var, "output": output_var,
+            "outline_checks": outline_checks,
         })
 
     def _add_files(self):
@@ -952,17 +986,51 @@ class BatchDialog(tk.Toplevel):
             out = row["output"].get().strip()
             if not out:
                 out = str(OUTPUT_DIR / (Path(audio).stem + ".mp4"))
+            # Build outline_titles from checked items
+            oc = row.get("outline_checks", [])
+            selected = [t for t, var in oc if var.get()]
+            outline_titles = [{"title": t, "original": t} for t in selected] if selected else None
+
             jobs.append({
-                "audio":  audio,
-                "title":  row["title"].get().strip(),
-                "script": row["script"].get().strip() or None,
-                "output": out,
+                "audio":          audio,
+                "title":          row["title"].get().strip(),
+                "script":         row["script"].get().strip() or None,
+                "outline_titles": outline_titles,
+                "output":         out,
             })
         if not jobs:
             messagebox.showinfo("Batch", "No jobs to render.")
             return
         self.destroy()
         self._on_start(jobs)
+
+
+class OutlinePickerDialog(tk.Toplevel):
+    """Small dialog to check/uncheck outline items for a batch job."""
+
+    def __init__(self, parent, outline_checks):
+        super().__init__(parent)
+        self.title("Select Outline Items")
+        self.configure(bg=BG)
+        self.resizable(False, True)
+        self.minsize(420, 200)
+
+        tk.Label(self, text="Check the items to include in the outline:",
+                 bg=BG, fg=FG, font=FONT_LABEL).pack(anchor="w", padx=20, pady=(14, 6))
+
+        frame = tk.Frame(self, bg=BG2, padx=16, pady=12)
+        frame.pack(fill="both", expand=True, padx=14, pady=(0, 8))
+
+        for title_str, var in outline_checks:
+            ttk.Checkbutton(frame, text=title_str, variable=var).pack(anchor="w", pady=3)
+
+        bar = tk.Frame(self, bg=BG2, padx=14, pady=10)
+        bar.pack(fill="x")
+        _btn(bar, "Select All",   lambda: [v.set(True)  for _, v in outline_checks], small=True).pack(side="left", padx=(0, 6))
+        _btn(bar, "Deselect All", lambda: [v.set(False) for _, v in outline_checks], small=True).pack(side="left")
+        _btn(bar, "Done", self.destroy, accent=True, small=True).pack(side="right")
+
+        self.grab_set()
 
 
 if __name__ == "__main__":
