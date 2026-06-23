@@ -185,16 +185,15 @@ if [[ ! -f "$VENV_DIR/bin/python3" ]]; then
     "$PYTHON_BIN" -m venv "$VENV_DIR"
 fi
 
-"$VENV_DIR/bin/pip" install --upgrade pip -q
+"$VENV_DIR/bin/pip" install --upgrade pip
 
-info "Installing / upgrading Python packages…"
+info "Installing / upgrading Python packages (this may take several minutes on first run)…"
 "$VENV_DIR/bin/pip" install --upgrade \
     faster-whisper \
     pillow \
     flask \
     gunicorn \
-    python-docx \
-    -q
+    python-docx
 
 ok "Python packages up to date."
 
