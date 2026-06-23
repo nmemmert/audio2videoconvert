@@ -244,15 +244,10 @@ progress { width:100%; height:8px; accent-color:var(--accent); }
           <input type="radio" name="outline_style" value="ticker" id="outline_style_ticker"> Chapter ticker
         </label>
       </div>
-      <div class="grid2" style="margin-top:10px;">
-        <div>
-          <label class="field-label">Outline font</label>
-          <select id="outline_font"></select>
-        </div>
-        <div>
-          <label class="field-label">Outline font size</label>
-          <input type="number" id="outline_font_size" min="12" max="72">
-        </div>
+      <div style="margin-top:10px;">
+        <label class="field-label">Outline font</label>
+        <select id="outline_font"></select>
+        <p class="small" style="margin-top:4px;">Font size is calculated automatically to fit all items.</p>
       </div>
       <label class="field-label" style="margin-top:10px;">Script (.docx) — extracts section headers</label>
       <input type="file" id="script-file" accept=".docx">
