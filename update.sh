@@ -17,7 +17,7 @@ set -euo pipefail
 APP_DIR="${APP_DIR:-$HOME/podcast-video-gui}"
 VENV_DIR="${VENV_DIR:-$HOME/whisper-env}"   # must match render_engine.py's PYTHON_VENV
 SERVICE_NAME="podcast-video-web"
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-}")" && pwd 2>/dev/null || pwd)"
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 bar()  { echo ""; echo "══════════════════════════════════════════════════════"; }
