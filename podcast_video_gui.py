@@ -693,27 +693,26 @@ class App(tk.Tk):
         threading.Thread(target=run, daemon=True).start()
 
     def _start_batch(self):
-        files = filedialog.askopenfilenames(
-            title="Select audio files for batch render",
-            filetypes=[("Audio", "*.mp3 *.m4a *.wav *.aac *.flac *.ogg"), ("All", "*.*")])
-        if not files:
-            return
+        """Open the Batch Manager dialog."""
+        BatchDialog(self, self._collect_settings(), self._get_art_path(),
+                    on_start=self._run_batch_jobs)
 
+    def _get_art_path(self):
         s = self._collect_settings()
-        art_path = None
-        if s["art_enabled"]:
-            p = ART_DIR / s["art"]
-            if not p.exists():
-                messagebox.showerror("Error", f"Art image not found: {s['art']}")
-                return
-            art_path = str(p)
+        if not s["art_enabled"]:
+            return None
+        p = ART_DIR / s["art"]
+        return str(p) if p.exists() else None
 
-        script_path = self.v_script.get().strip() or None
-        outline_titles = None
-        if script_path and self._outline_checks:
-            selected = [t for t, var in self._outline_checks if var.get()]
-            if selected:
-                outline_titles = [{"title": t, "original": t} for t in selected]
+    def _run_batch_jobs(self, jobs):
+        """Called by BatchDialog when the user clicks Start. jobs = list of dicts."""
+        if not jobs:
+            return
+        s = self._collect_settings()
+        art_path = self._get_art_path()
+        if s["art_enabled"] and not art_path:
+            messagebox.showerror("Error", f"Art image not found: {s['art']}")
+            return
 
         self._render_btn.config(state="disabled")
         self._batch_btn.config(state="disabled")
@@ -723,26 +722,32 @@ class App(tk.Tk):
         self._log_text.delete("1.0", "end")
         self._log_text.config(state="disabled")
 
-        total = len(files)
+        total = len(jobs)
 
         def run_batch():
-            for idx, audio in enumerate(files, 1):
-                name = Path(audio).stem
-                out = str(OUTPUT_DIR / f"{name}.mp4")
-                self._log_q.put(("log", f"── File {idx}/{total}: {Path(audio).name}"))
-                self._log_q.put(("progress", f"File {idx}/{total}", (idx - 1) / total))
+            for idx, job in enumerate(jobs, 1):
+                audio      = job["audio"]
+                title      = job["title"]
+                script_p   = job["script"] or None
+                out        = job["output"]
+                Path(out).parent.mkdir(parents=True, exist_ok=True)
+
+                self._log_q.put(("log", f"── Job {idx}/{total}: {Path(audio).name}"))
+                self._log_q.put(("progress", f"Job {idx}/{total}", (idx - 1) / total))
+
                 ok = eng.render_job(
                     s, audio, out,
                     art_path=art_path,
-                    title=name.replace("_", " ").replace("-", " ").title(),
-                    script_path=script_path,
-                    outline_titles=outline_titles,
+                    title=title,
+                    script_path=script_p,
                     progress_cb=lambda stage, frac, i=idx: self._log_q.put((
-                        "progress", f"File {i}/{total} — {stage}", ((i - 1) + frac) / total)),
+                        "progress", f"Job {i}/{total} — {stage}",
+                        ((i - 1) + frac) / total)),
                     log_cb=lambda msg: self._log_q.put(("log", msg)),
                 )
                 tag = "good" if ok else "bad"
-                self._log_q.put(("log", f"{'✓' if ok else '✗'} {Path(audio).name} → {out}", tag))
+                self._log_q.put(("log",
+                    f"{'✓' if ok else '✗'} {Path(audio).name} → {Path(out).name}", tag))
 
             self._log_q.put(("done_batch", total))
 
@@ -795,6 +800,169 @@ class App(tk.Tk):
         self._log_text.insert("end", msg + "\n", tag or "")
         self._log_text.see("end")
         self._log_text.config(state="disabled")
+
+
+class BatchDialog(tk.Toplevel):
+    """Batch manager — one row per episode, each with its own audio, title, and script."""
+
+    COL_AUDIO  = 0
+    COL_TITLE  = 1
+    COL_SCRIPT = 2
+    COL_OUTPUT = 3
+
+    def __init__(self, parent, settings, art_path, on_start):
+        super().__init__(parent)
+        self.title("Batch Render Manager")
+        self.configure(bg=BG)
+        self.resizable(True, True)
+        self.minsize(900, 420)
+        self._on_start = on_start
+        self._rows = []   # list of dicts with tk vars
+
+        self._build(settings)
+        self.grab_set()
+
+    def _build(self, settings):
+        # Header
+        hdr = tk.Frame(self, bg="#111111", padx=16, pady=10)
+        hdr.pack(fill="x")
+        tk.Label(hdr, text="Batch Render Manager", bg="#111111", fg=ACCENT,
+                 font=("Helvetica", 13, "bold")).pack(side="left")
+        tk.Label(hdr, text="Visual settings are shared from the main window.",
+                 bg="#111111", fg=FG2, font=FONT_SMALL).pack(side="left", padx=16)
+
+        # Column headers
+        col_hdr = tk.Frame(self, bg=BG3, padx=10, pady=6)
+        col_hdr.pack(fill="x", padx=12, pady=(8, 0))
+        for text, w in [("Audio File", 28), ("Episode Title", 20), ("Script (.docx)", 20), ("Output File", 22)]:
+            tk.Label(col_hdr, text=text, bg=BG3, fg=FG2, font=FONT_SMALL,
+                     width=w, anchor="w").pack(side="left", padx=4)
+
+        # Scrollable job list
+        wrap = tk.Frame(self, bg=BG)
+        wrap.pack(fill="both", expand=True, padx=12, pady=4)
+
+        canvas = tk.Canvas(wrap, bg=BG, highlightthickness=0)
+        vsb = ttk.Scrollbar(wrap, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=vsb.set)
+        vsb.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+
+        self._list_frame = tk.Frame(canvas, bg=BG)
+        self._list_win = canvas.create_window((0, 0), window=self._list_frame, anchor="nw")
+        self._list_frame.bind("<Configure>", lambda e: canvas.configure(
+            scrollregion=canvas.bbox("all")))
+        canvas.bind("<Configure>", lambda e: canvas.itemconfig(self._list_win, width=e.width))
+        canvas.bind_all("<MouseWheel>", lambda e: canvas.yview_scroll(
+            int(-1 * (e.delta / 120)), "units"))
+
+        # Bottom bar
+        bar = tk.Frame(self, bg=BG2, padx=14, pady=12)
+        bar.pack(fill="x")
+        _btn(bar, "+ Add Files…", self._add_files, accent=True, small=True).pack(side="left", padx=(0, 6))
+        _btn(bar, "Remove Selected", self._remove_selected, danger=True, small=True).pack(side="left")
+        _btn(bar, "▶  Start Batch", self._start, accent=True).pack(side="right")
+        _btn(bar, "Cancel", self.destroy, small=True).pack(side="right", padx=(0, 8))
+
+    def _add_row(self, audio="", title="", script="", output=""):
+        row_idx = len(self._rows)
+        frame = tk.Frame(self._list_frame, bg=BG2 if row_idx % 2 == 0 else BG, pady=3)
+        frame.pack(fill="x", pady=1)
+
+        sel_var = tk.BooleanVar(value=False)
+        audio_var  = tk.StringVar(value=audio)
+        title_var  = tk.StringVar(value=title)
+        script_var = tk.StringVar(value=script)
+        output_var = tk.StringVar(value=output)
+
+        bg = BG2 if row_idx % 2 == 0 else BG
+
+        def pick_audio(av=audio_var, tv=title_var, ov=output_var):
+            f = filedialog.askopenfilename(
+                filetypes=[("Audio", "*.mp3 *.m4a *.wav *.aac *.flac *.ogg"), ("All", "*.*")])
+            if f:
+                av.set(f)
+                if not tv.get():
+                    tv.set(Path(f).stem.replace("_", " ").replace("-", " ").title())
+                if not ov.get():
+                    ov.set(str(OUTPUT_DIR / (Path(f).stem + ".mp4")))
+
+        def pick_script(sv=script_var):
+            f = filedialog.askopenfilename(filetypes=[("Word doc", "*.docx"), ("All", "*.*")])
+            if f:
+                sv.set(f)
+
+        def pick_output(ov=output_var):
+            f = filedialog.asksaveasfilename(defaultextension=".mp4",
+                                              filetypes=[("MP4", "*.mp4")])
+            if f:
+                ov.set(f)
+
+        ttk.Checkbutton(frame, variable=sel_var).pack(side="left", padx=(6, 2))
+
+        for var, pick_fn, w in [
+            (audio_var,  pick_audio,  26),
+            (title_var,  None,        18),
+            (script_var, pick_script, 18),
+            (output_var, pick_output, 20),
+        ]:
+            inner = tk.Frame(frame, bg=bg)
+            inner.pack(side="left", padx=3)
+            e = tk.Entry(inner, textvariable=var, width=w, bg=BG3, fg=FG,
+                         insertbackground=FG, relief="flat", font=FONT_SMALL,
+                         highlightthickness=1, highlightbackground=SEP, highlightcolor=ACCENT)
+            e.pack(side="left")
+            if pick_fn:
+                _btn(inner, "…", pick_fn, small=True).pack(side="left", padx=2)
+
+        self._rows.append({
+            "frame": frame, "sel": sel_var,
+            "audio": audio_var, "title": title_var,
+            "script": script_var, "output": output_var,
+        })
+
+    def _add_files(self):
+        files = filedialog.askopenfilenames(
+            title="Select audio files",
+            filetypes=[("Audio", "*.mp3 *.m4a *.wav *.aac *.flac *.ogg"), ("All", "*.*")])
+        for f in files:
+            stem = Path(f).stem
+            self._add_row(
+                audio=f,
+                title=stem.replace("_", " ").replace("-", " ").title(),
+                output=str(OUTPUT_DIR / f"{stem}.mp4"),
+            )
+
+    def _remove_selected(self):
+        keep = []
+        for row in self._rows:
+            if row["sel"].get():
+                row["frame"].destroy()
+            else:
+                keep.append(row)
+        self._rows = keep
+
+    def _start(self):
+        jobs = []
+        for row in self._rows:
+            audio = row["audio"].get().strip()
+            if not audio or not Path(audio).exists():
+                messagebox.showwarning("Batch", f"Audio file not found:\n{audio}")
+                return
+            out = row["output"].get().strip()
+            if not out:
+                out = str(OUTPUT_DIR / (Path(audio).stem + ".mp4"))
+            jobs.append({
+                "audio":  audio,
+                "title":  row["title"].get().strip(),
+                "script": row["script"].get().strip() or None,
+                "output": out,
+            })
+        if not jobs:
+            messagebox.showinfo("Batch", "No jobs to render.")
+            return
+        self.destroy()
+        self._on_start(jobs)
 
 
 if __name__ == "__main__":
