@@ -335,19 +335,16 @@ def _subtract_intervals(start, end, blackouts):
 
 def build_sidebar_ass(points, s, duration_f, out_path, start_y=None, end_y=None,
                       art_x=None, blackout=None):
-    """Left-side outline: one item per line, expanding to fill the sidebar width.
+    """Left-side outline with word-wrap and dynamic font sizing.
 
-    Font size is the largest value where:
-      (a) even the longest item fits on a single line within text_px_w, AND
-      (b) all items fit vertically within start_y → end_y
+    Finds the largest font size where all items (each allowed up to 2 lines)
+    fit vertically within start_y → end_y.  Items that exceed one line's worth
+    of characters are split at the nearest space to the midpoint.
 
-    No Python word-wrapping — each item is always a single line so the text
-    fills right up to the art edge for every item.
-
-    start_y  — top of the outline region (below captions)
-    end_y    — bottom of the outline region (above waveform)
-    art_x    — left edge of the art image; text stays left of this
-    blackout — list of (start, end) intervals where the outline is suppressed
+    start_y  — top of outline region (below title)
+    end_y    — bottom of outline region (above waveform)
+    art_x    — left edge of art; text stays left of this
+    blackout — list of (start, end) intervals where outline is suppressed
     """
     blackout = blackout or []
 
@@ -365,21 +362,48 @@ def build_sidebar_ass(points, s, duration_f, out_path, start_y=None, end_y=None,
 
     n = max(len(points), 1)
     available_h = max(1, end_y - start_y)
-    # Usable pixel width: x=24 to art_x-24
-    text_px_w = max(80, art_x - 48)
+    text_px_w = max(80, art_x - 48)  # x=24 to art_x-24
 
-    # Longest item drives the horizontal font cap
-    longest = max((len(text) for _, text in points), default=1)
-    # Georgia character width ≈ size × 0.62 px; be slightly conservative at 0.65
-    size_for_width  = max(18, int(text_px_w / (longest * 0.65)))
-    # Each item gets equal vertical slot; font must fit within slot
-    size_for_height = max(18, (available_h // n) - 10)
-    size = min(52, size_for_width, size_for_height)
-    size = max(18, size)
+    def _wrap_item(text, size):
+        """Return (ass_text, line_count) — splits at a space if text is too wide."""
+        char_w = size * 0.55  # Georgia caps average ~0.55× size
+        max_chars = max(1, int(text_px_w / char_w))
+        if len(text) <= max_chars:
+            return text, 1
+        # Find space nearest the midpoint for the cleanest visual split
+        mid = len(text) // 2
+        best = None
+        for d in range(mid + 1):
+            for pos in ([mid] if d == 0 else [mid - d, mid + d]):
+                if 0 < pos < len(text) and text[pos] == ' ':
+                    best = pos
+                    break
+            if best is not None:
+                break
+        if best is None:
+            best = max_chars
+        l1 = text[:best].rstrip()
+        l2 = text[best:].lstrip()
+        return l1 + "\\N" + l2, 2  # \\N → \N in file → ASS hard line break
 
-    # Equal slot per item; 72% used for text, 28% is breathing room
-    item_slot = available_h / n
-    FILL = 0.72
+    LINE_H_FACTOR = 1.35  # line height = size × this (accounts for leading)
+
+    # Binary-search for the largest size where everything fits vertically
+    best_size = 18
+    for size in range(72, 17, -1):
+        total_lines = sum(_wrap_item(t, size)[1] for _, t in points)
+        if total_lines * size * LINE_H_FACTOR <= available_h:
+            best_size = size
+            break
+
+    size = best_size
+    wrapped = [_wrap_item(t, size) for _, t in points]
+    total_lines = max(1, sum(nl for _, nl in wrapped))
+    line_h = size * LINE_H_FACTOR
+
+    # Distribute whitespace evenly: gap before first item, between items, after last
+    total_text_h = total_lines * line_h
+    gap = max(4, (available_h - total_text_h) / (n + 1))
 
     header = f"""[Script Info]
 ScriptType: v4.00+
@@ -394,27 +418,24 @@ Style: Default,{font},{size},{color},{color},&H00000000,&H80000000,0,0,0,0,100,1
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """
-    lines = [header]
+    lines_out = [header]
     dim_hex = "888888"
-    line_h = size  # single line per item — no wrapping
-    for i, (start, text) in enumerate(points):
-        escaped = text.replace("\\", "\\\\").replace("{", "").replace("}", "")
-        slot_top = start_y + i * item_slot
-        margin   = item_slot * (1 - FILL) / 2
-        y = int(slot_top + margin + (item_slot * FILL - line_h) / 2)
-
+    y_cursor = start_y + gap
+    for i, ((start, _orig_text), (ass_text, nl)) in enumerate(zip(points, wrapped)):
+        y = int(y_cursor)
         if start < duration_f:
             pos = f"\\pos(24,{y})\\an7"
             next_start = points[i + 1][0] if i + 1 < len(points) else duration_f
             active_end = min(next_start, duration_f)
             for seg_s, seg_e in _subtract_intervals(start, active_end, blackout):
                 tag = f"{{{pos}\\fad(400,0)}}"
-                lines.append(f"Dialogue: 0,{_ass_fmt(seg_s)},{_ass_fmt(seg_e)},Default,,0,0,0,,{tag}{escaped}")
+                lines_out.append(f"Dialogue: 0,{_ass_fmt(seg_s)},{_ass_fmt(seg_e)},Default,,0,0,0,,{tag}{ass_text}")
             for seg_s, seg_e in _subtract_intervals(active_end, duration_f, blackout):
                 tag = f"{{{pos}\\c&H{dim_hex}&}}"
-                lines.append(f"Dialogue: 0,{_ass_fmt(seg_s)},{_ass_fmt(seg_e)},Default,,0,0,0,,{tag}{escaped}")
+                lines_out.append(f"Dialogue: 0,{_ass_fmt(seg_s)},{_ass_fmt(seg_e)},Default,,0,0,0,,{tag}{ass_text}")
+        y_cursor += nl * line_h + gap
 
-    out_path.write_text("\n".join(lines))
+    out_path.write_text("\n".join(lines_out))
 
 
 def build_ticker_ass(points, s, duration_f, out_path):
@@ -953,8 +974,12 @@ def render_job(s, audio_path, output_path, art_path=None,
                 if outline_style == "ticker":
                     build_ticker_ass(points, s, duration_f, outline_ass_path)
                 else:
-                    outline_start_y = art_y + 16
-                    outline_end_y   = height - wave_h - 12
+                    # Start below the title bar; title is drawn at y=72
+                    if title and s.get("title_enabled", True):
+                        outline_start_y = 72 + s.get("title_font_size", 48) + 28
+                    else:
+                        outline_start_y = 24
+                    outline_end_y = height - wave_h - 12
                     build_sidebar_ass(points, s, duration_f, outline_ass_path,
                                       start_y=outline_start_y, end_y=outline_end_y,
                                       art_x=art_x, blackout=_q_blackout)
@@ -1027,7 +1052,7 @@ def render_job(s, audio_path, output_path, art_path=None,
 
         if art_enabled:
             audio_idx = 1
-            fp.append(f"[0:v]crop=min(iw\\,ih):min(iw\\,ih),scale={art_size}:{art_size},format=rgb24[art_sharp]")
+            fp.append(f"[0:v]crop=min(iw\\,ih):min(iw\\,ih):(iw-min(iw\\,ih))/2:(ih-min(iw\\,ih))/2,scale={art_size}:{art_size},format=rgb24[art_sharp]")
             fp.append(bg_filter)
             if s.get("glow_enabled", True):
                 fp.append(f"[art_sharp]gblur=sigma={glow_sigma}[glow_soft]")
