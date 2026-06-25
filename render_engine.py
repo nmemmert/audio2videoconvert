@@ -835,8 +835,13 @@ def render_job(s, audio_path, output_path, art_path=None,
     caption_y_ass = height - art_y + 16
 
     def _compute_art_x(sw):
-        """Return clamped art_x for a given sidebar width sw."""
-        ax = sw + (width - sw - art_size) // 2 + s.get("art_x_offset", 0)
+        """Return clamped art_x for a given sidebar width sw.
+
+        Centers art in the right panel but caps the right edge at 75% of the
+        video width so the art stays visible in common preview window widths.
+        """
+        right_cap = sw + int((width - sw) * 0.75)  # use at most 75% of right panel
+        ax = sw + (right_cap - sw - art_size) // 2 + s.get("art_x_offset", 0)
         return max(0, min(ax, width - art_size))
 
     # Preliminary art_x (used for outline text-wrap if points are found).
