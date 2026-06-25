@@ -979,7 +979,8 @@ def render_job(s, audio_path, output_path, art_path=None,
                         outline_start_y = 72 + s.get("title_font_size", 48) + 28
                     else:
                         outline_start_y = 24
-                    outline_end_y = height - wave_h - 12
+                    # Cap at art bottom so captions below the art are never covered
+                    outline_end_y = art_y + art_size - 8
                     build_sidebar_ass(points, s, duration_f, outline_ass_path,
                                       start_y=outline_start_y, end_y=outline_end_y,
                                       art_x=art_x, blackout=_q_blackout)
